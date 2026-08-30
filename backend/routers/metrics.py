@@ -5,6 +5,7 @@ MRR, ARR, Churn, LTV, Active Companies, etc.
 from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Optional, List, Dict, Any
 from auth import get_current_super_admin
 from database import database
 

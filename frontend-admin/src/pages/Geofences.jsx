@@ -348,7 +348,7 @@ export default function Geofences() {
                         defaultValue=""
                       >
                         <option value="">Asignar a empleado...</option>
-                        {employees.filter(e => e.active).map(e => (
+                        {(Array.isArray(employees) ? employees : []).filter(e => e.active).map(e => (
                           <option key={e.id} value={e.id}>{e.name}</option>
                         ))}
                       </select>

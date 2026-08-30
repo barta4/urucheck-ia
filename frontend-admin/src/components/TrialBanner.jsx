@@ -23,7 +23,7 @@ export default function TrialBanner() {
     setLoadingPlans(true)
     try {
       const res = await api.get('/plans/')
-      setPlans(res.data.filter(p => p.active))
+      setPlans(Array.isArray(res.data) ? res.data.filter(p => p.active) : [])
     } catch (e) {
       showError('Error al cargar planes disponibles')
     } finally {

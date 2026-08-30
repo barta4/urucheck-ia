@@ -80,7 +80,7 @@ export default function SaasCompanies() {
     }
   }
 
-  const filtered = companies.filter(c => {
+  const filtered = (Array.isArray(companies) ? companies : []).filter(c => {
     if (filter && !c.name.toLowerCase().includes(filter.toLowerCase()) && !c.slug.includes(filter.toLowerCase())) return false
     if (planFilter && c.plan_name !== planFilter) return false
     if (statusFilter && c.status !== statusFilter) return false

@@ -149,7 +149,7 @@ export default function SaasBilling() {
 
   const { companies = [], summary = {} } = billingData || {}
 
-  const filteredCompanies = companies.filter(c => {
+  const filteredCompanies = (Array.isArray(companies) ? companies : []).filter(c => {
     if (companyFilter && !c.company_name.toLowerCase().includes(companyFilter.toLowerCase()) && !c.company_slug.includes(companyFilter.toLowerCase())) return false
     if (statusFilter && c.billing_status !== statusFilter) return false
     return true

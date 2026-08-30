@@ -51,8 +51,9 @@ export default function Bonuses() {
     }
   }
 
-  const totalEvaluated = report?.report?.length || 0
-  const totalEarned = report?.report?.filter(r => r.bonus_earned).length || 0
+  const reportList = Array.isArray(report?.report) ? report.report : []
+  const totalEvaluated = reportList.length
+  const totalEarned = reportList.filter(r => r.bonus_earned).length
   const totalNotEarned = totalEvaluated - totalEarned
 
   return (

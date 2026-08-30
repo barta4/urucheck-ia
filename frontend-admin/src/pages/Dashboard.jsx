@@ -47,7 +47,8 @@ export default function Dashboard() {
     </div>
   )
 
-  const { summary, employees } = data || { summary: {}, employees: [] }
+  const summary = data?.summary || {}
+  const employees = Array.isArray(data?.employees) ? data.employees : []
   const mapEmployees = employees.filter(e => e.latitude && e.longitude)
 
   return (
