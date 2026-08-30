@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manual de Usuario — Control de Asistencia IA</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="light-mode">
+
+  <!-- Header -->
+  <header class="main-header">
+    <div class="header-container">
+      <div class="logo-area">
+        <span class="logo-icon">📘</span>
+        <div class="logo-text">
+          <h1>UruCheck IA</h1>
+          <p>Manual de Usuario Oficial</p>
+        </div>
+      </div>
+      
+      <div class="header-actions">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="doc-search" placeholder="Buscar en el manual...">
+        </div>
+        <button id="theme-toggle" aria-label="Cambiar tema" class="action-btn">
+          <span class="sun-icon">☀️</span>
+          <span class="moon-icon">🌙</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- App Layout -->
+  <div class="app-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <nav class="nav-menu">
+        <p class="nav-title">Comenzando</p>
+        <ul>
+          <li><a href="#intro" class="nav-link active">🏠 Introducción</a></li>
+          <li><a href="#login" class="nav-link">🔑 Iniciar Sesión</a></li>
+        </ul>
+
+        <p class="nav-title">Módulos del Sistema</p>
+        <ul>
+          <li><a href="#dashboard" class="nav-link">📊 Dashboard Principal</a></li>
+          <li><a href="#employees" class="nav-link">👤 Gestión de Empleados</a></li>
+          <li><a href="#schedules" class="nav-link">⏰ Horarios y Descansos</a></li>
+          <li><a href="#geofences" class="nav-link">📍 Zonas (Geocercas)</a></li>
+          <li><a href="#logs" class="nav-link">📅 Historial de Asistencia</a></li>
+          <li><a href="#biometrics" class="nav-link">🤖 Registro Biométrico</a></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+      <!-- Intro Section -->
+      <section id="intro" class="doc-section active-section">
+        <div class="badge">Bienvenido</div>
+        <h2 class="section-title">Control de Asistencia Inteligente</h2>
+        <p class="lead">Esta plataforma SaaS permite a empresas gestionar de forma centralizada la puntualidad, horarios, geocercas y marcas biométricas de sus colaboradores mediante Inteligencia Artificial.</p>
+        
+        <div class="info-alert">
+          <span class="alert-icon">💡</span>
+          <div class="alert-content">
+            <strong>¿Quién debe usar esta guía?</strong>
+            <p>Este manual está diseñado de forma no técnica para administradores de personal, personal de recursos humanos y directores de sucursales que operan el sistema diariamente.</p>
+          </div>
+        </div>
+
+        <div class="card-grid">
+          <div class="feature-card">
+            <span class="feature-icon">🛡️</span>
+            <h3>Control Seguro</h3>
+            <p>Geolocalización GPS exacta combinada con biometría facial para evitar suplantaciones.</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">⚡</span>
+            <h3>Gestión Ágil</h3>
+            <p>Asignación de turnos semanales, tolerancias y descansos con pocos clics.</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">📈</span>
+            <h3>Métricas Clave</h3>
+            <p>Estadísticas automatizadas de puntualidad, faltas y rachas positivas.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Login Section -->
+      <section id="login" class="doc-section">
+        <h2 class="section-title">🔑 Cómo Iniciar Sesión</h2>
+        <p>Para ingresar al sistema de administración, acceda al portal web oficial utilizando cualquier navegador moderno (se recomienda Google Chrome, Edge o Safari).</p>
+        
+        <div class="url-box">
+          <span class="url-label">Enlace de acceso:</span>
+          <a href="https://asistencia.urufile.duckdns.org/" target="_blank" class="url-link">https://asistencia.urufile.duckdns.org/ ↗</a>
+        </div>
+
+        <div class="warning-alert">
+          <span class="alert-icon">⚠️</span>
+          <div class="alert-content">
+            <strong>Credenciales por Defecto</strong>
+            <p>Si es su primer acceso o está en periodo de prueba, utilice las credenciales preconfiguradas:
+            <br><strong>Email:</strong> <code>admin@miempresa.com</code>
+            <br><strong>Contraseña:</strong> <code>admin123</code></p>
+          </div>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/login_page_1788129615389.png" alt="Pantalla de Inicio de Sesión" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Dashboard Section -->
+      <section id="dashboard" class="doc-section">
+        <h2 class="section-title">📊 El Panel de Control (Dashboard)</h2>
+        <p>Al acceder con sus credenciales, la primera pantalla que visualizará es el Dashboard. Es el centro operativo y resumen ejecutivo diario de la empresa.</p>
+        
+        <div class="highlights">
+          <h3>Indicadores clave:</h3>
+          <ul>
+            <li><strong>Métricas de Cabecera</strong>: Visualice rápidamente el total de empleados activos, el porcentaje promedio de puntualidad mensual de toda la empresa y el número acumulado de llegadas tarde.</li>
+            <li><strong>Estado en Tiempo Real</strong>: El panel muestra dinámicamente quiénes están trabajando en este instante, quiénes están ausentes (sin registrar entrada aún) y quiénes están en descanso.</li>
+          </ul>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/dashboard_page_1788129669768.png" alt="Dashboard Principal" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Employees Section -->
+      <section id="employees" class="doc-section">
+        <h2 class="section-title">👤 Gestión de Empleados</h2>
+        <p>En el menú lateral o superior, ingrese a la sección de **Empleados**. Aquí se listan todos los colaboradores registrados en el sistema, mostrando su información de contacto, rol y estado biométrico.</p>
+
+        <div class="info-alert">
+          <span class="alert-icon">✨</span>
+          <div class="alert-content">
+            <strong>Funciones Principales:</strong>
+            <p><strong>+ Nuevo Empleado:</strong> Crea un perfil individual asignándole nombre, cédula de identidad (C.I.), teléfono, dirección, correo electrónico y clave inicial.
+            <br><strong>Importar CSV:</strong> Herramienta masiva para registrar decenas de empleados de una sola vez subiendo un archivo CSV.</p>
+          </div>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/employees_page_1788129709440.png" alt="Gestión de Empleados" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Schedules Section -->
+      <section id="schedules" class="doc-section">
+        <h2 class="section-title">⏰ Horarios y Descansos</h2>
+        <p>La correcta configuración de los horarios individuales asegura que el sistema calcule con exactitud las llegadas tarde y registre las horas trabajadas.</p>
+        
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">1</span>
+            <h4>Asignar Turno de Trabajo</h4>
+          </div>
+          <p>Presione el botón de calendario 📅 de la fila del empleado. En el modal emergente, elija los días laborables (Lun a Dom) y defina la hora exacta de Entrada y de Salida.</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">2</span>
+            <h4>Tolerancia en Minutos</h4>
+          </div>
+          <p>Configure el margen de gracia en minutos (por ejemplo, 5 o 10 minutos). Si un empleado marca posterior a ese límite, el registro figurará automáticamente marcado como retraso.</p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-header">
+            <span class="step-number">3</span>
+            <h4>Reglas de Descanso (Almuerzo)</h4>
+          </div>
+          <p>Defina si la jornada cuenta con descanso:
+          <br>• <strong>Flexible:</strong> Indique una cantidad de minutos (ej. 45 min) para tomar en cualquier momento del turno.
+          <br>• <strong>Fijo:</strong> Rango horario exacto de pausa obligatorio (ej. 13:00 a 14:00).</p>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/employee_schedule_modal_1788129748715.png" alt="Gestión de Horarios y Descansos" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Geofences Section -->
+      <section id="geofences" class="doc-section">
+        <h2 class="section-title">📍 Zonas de Marcación (Geocercas)</h2>
+        <p>Las geocercas definen las coordenadas geográficas autorizadas donde un empleado puede registrar sus fichajes desde su dispositivo móvil.</p>
+
+        <div class="warning-alert">
+          <span class="alert-icon">📍</span>
+          <div class="alert-content">
+            <strong>Restricción GPS</strong>
+            <p>Cuando asocia un horario de un empleado a una sucursal específica (geocerca), la aplicación móvil no le permitirá marcar asistencia si no se encuentra dentro del rango de metros definido para esa ubicación.</p>
+          </div>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/geofences_page_1788129844124.png" alt="Zonas de Marcación" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Logs Section -->
+      <section id="logs" class="doc-section">
+        <h2 class="section-title">📅 Historial de Asistencia (Registros)</h2>
+        <p>Esta sección almacena toda la actividad de marcación de la empresa. Ideal para auditorías, revisiones de fin de mes y resolución de disputas de horarios.</p>
+
+        <div class="highlights">
+          <h3>Elementos de Auditoría:</h3>
+          <ul>
+            <li><strong>Foto de Marcado:</strong> Selfie obligatoria que el empleado se toma en vivo al pulsar el botón en la app móvil.</li>
+            <li><strong>Ubicación en Mapa:</strong> Coordenada exacta GPS mapeada al instante del marcado.</li>
+            <li><strong>Estado Biométrico:</strong> Indica si el sistema de inteligencia artificial confirmó la correspondencia del rostro del empleado con su foto de referencia.</li>
+          </ul>
+        </div>
+
+        <div class="image-wrapper">
+          <span class="zoom-hint">🔍 Haz clic para ampliar</span>
+          <img src="docs/images/logs_page_1788129930812.png" alt="Historial de Asistencias" class="lightbox-trigger">
+        </div>
+      </section>
+
+      <!-- Biometrics Section -->
+      <section id="biometrics" class="doc-section">
+        <h2 class="section-title">🤖 Registro Biométrico (Rostro)</h2>
+        <p>Para activar la verificación automática por IA, el administrador debe cargar la foto frontal de referencia de cada colaborador.</p>
+
+        <div class="info-alert">
+          <span class="alert-icon">💡</span>
+          <div class="alert-content">
+            <strong>Instrucciones para la foto:</strong>
+            <p>1. Ingrese a <strong>Empleados</strong>, localice la columna <strong>Biometría</strong> y haga clic en <strong>Registrar</strong>.
+            <br>2. Cargue una foto frontal de su cara con iluminación uniforme.
+            <br>3. Evite anteojos de sol, tapabocas o gorros que cubran rasgos esenciales.
+            <br>4. Guarde el registro. A partir de ese momento, la app móvil comparará la selfie diaria con esta plantilla.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Lightbox Modal -->
+  <div id="lightbox" class="lightbox">
+    <span class="lightbox-close">&times;</span>
+    <img class="lightbox-content" id="lightbox-img">
+    <div id="lightbox-caption"></div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="main-footer">
+    <p>&copy; 2026 UruCheck IA. Todos los derechos reservados. Control de Asistencia SaaS Multi-empresa.</p>
+  </footer>
+
+  <!-- Script -->
+  <script src="script.js"></script>
+</body>
+</html>
