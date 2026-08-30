@@ -47,15 +47,26 @@ Cuando un usuario tiene `is_super_admin = true`, desbloquea:
    * Contador de empresas cuyos trials vencen en los próximos 3 días.
    * Configuración de URLs de descarga globales para la App móvil (APK Android y App Store).
 
-2. **Gestión de Empresas Clientes (`/saas-companies`)**:
-   * Listado de todas las empresas registradas en la plataforma.
-   * Capacidad de suspender, reactivar o cambiar de plan a cualquier empresa cliente.
-   * Asignación de overrides personalizados de límite de empleados (`max_employees_override`).
+4. **Gestión de Cobros y Facturación SaaS (`/saas/billing`)**:
+   * **KPIs Financieros Globales en USD**: Total recaudado histórico, MRR activo, empresas al día y monto pendiente por cobrar.
+   * **Estado de Cobro por Empresa**: Monitoreo de empresas al día, en período de prueba (trial), vencidas o suspendidas con días de atraso.
+   * **Registro de Pagos Manuales**: Permite acreditar pagos recibidos fuera de pasarela (transferencias bancarias, efectivo, cheques), emitiendo factura y extendiendo la suscripción (+15, +30, +60, +90, +365 días) de forma inmediata.
+   * **Generador de Links de Pago MP**: Creación de enlaces de checkout directos en USD con copia al portapapeles para enviar por WhatsApp o Email.
+   * **Historial Global y Exportación**: Registro paginado de todas las transacciones con exportación a archivo **Excel (CSV)**.
 
-3. **Gestión de Planes y Precios (`/saas-plans`)**:
-   * Crear, editar precios (mensual/anual), límites de empleados y geocercas, y activar/desactivar funciones (reconocimiento facial, webhooks, chat IA, etc.).
+5. **Integración con MercadoPago / MercadoLibre (`/saas/mercadopago`)**:
+   * Panel de control con indicador de estado en vivo (🟢 Conectado / 🔴 No configurado).
+   * Verificación en tiempo real contra la API de MercadoPago (`https://api.mercadopago.com/users/me`) mostrando titular, email, sitio y moneda USD.
+   * Configuración de credenciales de producción y OAuth (`client_id`, `client_secret`, `access_token`, `public_key`) almacenadas de forma segura y aplicadas en caliente sin reiniciar el backend.
+   * URL de webhook preconfigurada para notificaciones automáticas IPN.
 
-4. **Acceso de Auditoría y Fotos**:
+6. **Eliminación y Baja de Empresas (`/saas/companies`)**:
+   * Capacidad de dar de baja empresas del sistema de forma segura (*Soft-Delete*).
+   * Desactivación en cascada de empleados y administradores.
+   * Cancelación automática de suscripciones vigentes.
+   * Modal de confirmación con doble validación de seguridad (requiere tipear `ELIMINAR`).
+
+7. **Acceso de Auditoría y Fotos**:
    * Capacidad de inspeccionar registros de auditoría y fotos de cualquier empresa sin bloqueos de aislamiento de prefijo.
 
 ---

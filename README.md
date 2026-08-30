@@ -1,17 +1,24 @@
-# Sistema de Control de Asistencia Gamificado (SaaS Multi-Empresa)
+# Sistema de Control de Asistencia Gamificado y Biométrico — UruCheck IA (SaaS Multi-Empresa)
 
-> **v2.0.0** — Sistema multi-tenant. Cada empresa tiene sus propios datos aislados.
+> **v2.2.0** — Sistema multi-tenant con reconocimiento facial, multi-turnos y geocercas diferenciadas, control estricto de descansos/pausas, alerta de salidas tempranas, panel SaaS Master con cobros en USD, integración MercadoPago y eliminación de empresas.
+
+## 🐳 Imágenes Docker Hub (v2.2)
+
+* **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.2` (y `latest`)
+* **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.2` (y `latest`)
+
+---
 
 ## Estructura del proyecto
 
 ```
 attendance-system/
-├── backend/          # FastAPI - API REST
-├── frontend-admin/   # React + Tailwind - Panel Admin
-├── mobile-app/       # Expo React Native - App Empleados
-├── nginx/            # Reverse proxy
-├── db/               # SQL inicial
-└── docker-compose.yml
+├── backend/          # FastAPI - API REST, Biometría, Lógica Multi-Turnos y Cobros USD
+├── frontend-admin/   # React + Tailwind - Panel de Empresa y Panel SaaS Master
+├── mobile-app/       # Expo React Native - App Empleados con Alertas de Horario
+├── nginx/            # Reverse proxy y configuración de despliegue
+├── db/               # Esquema e inicialización SQL
+└── docker-compose.yml # Orquestación Dokploy + Traefik
 ```
 
 ---
@@ -26,9 +33,9 @@ El sistema soporta **múltiples empresas** con datos completamente aislados:
 |---|---|
 | **Registro** | `POST /api/companies/register` — Self-service, crea empresa + admin + config |
 | **Aislamiento** | Cada tabla tiene `company_id` — queries filtran automáticamente |
-| **JWT** | Token incluye `company_id` y `company_slug` — resuelto en cada request |
-| **Landing** | `/register` en el panel admin para crear nueva empresa |
-| **Plan gratuito** | Hasta 10 empleados por empresa |
+| **JWT** | Token incluye `company_id`, `company_slug` e `is_super_admin` |
+| **Panel SaaS Master** | `/saas` — Gestión global de clientes, cobros en USD y MercadoPago |
+| **Plan gratuito** | Hasta 10 empleados por empresa con período de prueba |
 
 ### Registrar nueva empresa:
 
