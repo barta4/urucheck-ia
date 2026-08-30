@@ -1,0 +1,107 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UruCheck IA — Docker Compose para Dokploy + Traefik
+#
+# INSTRUCCIONES:
+#   1. En Dokploy, crear un proyecto y agregar este compose.
+#   2. En "Environment Variables" de Dokploy, definir todas las variables
+#      listadas en .env.example (NO usar .env local en producción).
+#   3. Traefik ya está instalado y gestionado por Dokploy — no agregar nginx.
+#   4. Ajustar DOMAIN y DOMAIN_API según tu dominio real.
+#
+# VARIABLES REQUERIDAS EN DOKPLOY:
+#   DB_PASSWORD, SECRET_KEY, DOMAIN, VITE_API_URL,
+#   GEMINI_API_KEY, MERCADOPAGO_ACCESS_TOKEN (opcionales)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Base de datos ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: urucheck_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: attendance_db
+      POSTGRES_USER: attendance_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: America/Montevideo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    # Postgres NO expone puerto público — solo accesible internamente
+
+  # ── Backend API ─────────────────────────────────────────────────────────────
+  backend:
+    image: alfredobartaburu/urucheck-backend:v2.1
+    container_name: urucheck_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://attendance_user:${DB_PASSWORD}@postgres:5432/attendance_db
+      SECRET_KEY: ${SECRET_KEY}
+      PHOTOS_PATH: /app/photos
+      FRONTEND_URL: ${FRONTEND_URL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      FACE_VERIFICATION_ENABLED: ${FACE_VERIFICATION_ENABLED:-false}
+      FACE_VERIFICATION_PROVIDER: ${FACE_VERIFICATION_PROVIDER:-face_recognition}
+      FACE_VERIFICATION_THRESHOLD: ${FACE_VERIFICATION_THRESHOLD:-0.6}
+      MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN:-}
+      DEBUG: ${DEBUG:-false}
+      TIMEZONE: ${TIMEZONE:-America/Montevideo}
+      TZ: America/Montevideo
+    volumes:
+      - photos_data:/app/photos
+    depends_on:
+      - postgres
+    networks:
+      - internal
+      - dokploy-network  # red de Traefik gestionada por Dokploy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      # Ruta: cualquier petición a /api/* va al backend
+      - "traefik.http.routers.urucheck-api.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.urucheck-api.entrypoints=websecure"
+      - "traefik.http.routers.urucheck-api.tls=true"
+      - "traefik.http.routers.urucheck-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.urucheck-api.loadbalancer.server.port=8000"
+      - "traefik.http.routers.urucheck-api.priority=10"
+      # Aumentar timeout para subida de fotos
+      - "traefik.http.middlewares.urucheck-api-limits.buffering.maxRequestBodyBytes=20000000"
+      - "traefik.http.routers.urucheck-api.middlewares=urucheck-api-limits"
+  
+  # ── Frontend Admin ──────────────────────────────────────────────────────────
+  frontend:
+    image: alfredobartaburu/urucheck-frontend:v2.1
+    container_name: urucheck_admin
+    restart: unless-stopped
+    environment:
+      # Inyectada en runtime por docker-entrypoint.sh — sin rebuild
+      VITE_API_URL: ${VITE_API_URL}
+    networks:
+      - dokploy-network  # solo necesita red de Traefik
+    labels:
+      - "traefik.enable=true"
+      # Ruta: todo lo demás va al frontend
+      - "traefik.http.routers.urucheck-frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.urucheck-frontend.entrypoints=websecure"
+      - "traefik.http.routers.urucheck-frontend.tls=true"
+      - "traefik.http.routers.urucheck-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.urucheck-frontend.loadbalancer.server.port=80"
+      # El backend tiene mayor prioridad para /api (evita conflicto de rutas)
+      - "traefik.http.routers.urucheck-frontend.priority=1"
+
+volumes:
+  postgres_data:
+  photos_data:
+
+networks:
+  internal:
+    # Red privada solo para comunicación DB ↔ Backend
+    driver: bridge
+    internal: true
+  dokploy-network:
+    # Red externa gestionada por Dokploy/Traefik — debe existir previamente
+    external: true
