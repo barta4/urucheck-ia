@@ -870,26 +870,48 @@ extra: {
 
 ### 7.1 Acceso
 
-- URL: `http://localhost:8080/login`
-- Credenciales default: `admin@miempresa.com` / `admin123`
+- **URL Pública**: `https://asistencia.urufile.duckdns.org/` (o `http://localhost:8080/login` en desarrollo)
+- **Credenciales por defecto**: `admin@miempresa.com` / `admin123`
 
-### 7.2 Secciones
+#### Pantalla de Inicio de Sesión:
+![Pantalla de Login](docs/images/login_page_1788129615389.png)
 
-| Sección | Función |
-|---|---|
-| **Dashboard** | Estado en tiempo real, resumen del día |
-| **Empleados** | CRUD de empleados + horarios + foto facial |
-| **Registros** | Historial de asistencia con filtros + exportar Excel |
-| **Bonos** | Reporte mensual de bonos + exportar CSV |
-| **Geocercas** | Crear y asignar geocercas |
-| **Configuración** | Nombre, logo, colores, webhooks, mensajes, verificación facial |
-| **Chat IA** | Asistente virtual con datos de asistencia en tiempo real |
+---
+
+### 7.2 Secciones y Navegación
+
+#### A. Dashboard Principal
+El Dashboard proporciona un resumen ejecutivo diario del estado de la asistencia. Muestra los marcados del día, empleados ausentes, retrasos y la tasa de cumplimiento en tiempo real.
+
+![Dashboard del Sistema](docs/images/dashboard_page_1788129669768.png)
+
+#### B. Gestión de Empleados
+Permite dar de alta a nuevos trabajadores, editar perfiles y desvincular dispositivos móviles autorizados.
+
+![Lista de Empleados](docs/images/employees_page_1788129709440.png)
+
+##### Gestión de Turnos, Horarios y Ubicaciones:
+Al hacer clic en el ícono de calendario de cualquier empleado, se despliega el modal interactivo de horarios. Desde aquí se pueden definir tolerancias, límites de descanso (flexible/fijo) y geocercas específicas asignadas a dicho horario.
+
+![Modal de Horarios](docs/images/employee_schedule_modal_1788129748715.png)
+
+#### C. Geocercas (Zonas de Marcación)
+El panel cuenta con un mapa interactivo para delimitar geocercas poligonales o radiales. Los empleados sólo pueden registrar asistencia a través de la app móvil cuando su ubicación GPS se encuentra dentro de alguna de estas áreas autorizadas.
+
+![Mapa de Geocercas](docs/images/geofences_page_1788129844124.png)
+
+#### D. Historial de Registros
+Bitácora completa que detalla cada entrada, salida y descanso de los colaboradores, con visualización de la foto capturada, mapa de ubicación en el momento de la marca, y el estado de la verificación biométrica.
+
+![Historial de Registros](docs/images/logs_page_1788129930812.png)
+
+---
 
 ### 7.3 Registro de Nueva Empresa
 
-- URL: `http://localhost:8080/register`
-- Crea empresa + admin + configuración + suscripción trial
-- Plan default: Free (10 empleados, 14 días de trial)
+- **URL**: `http://localhost:8080/register` (o `/register` en el dominio de producción)
+- Crea empresa + cuenta de administrador + configuración por defecto + suscripción de prueba.
+- **Plan por defecto**: Plan Gratuito (Free), con límite de 10 empleados y 14 días de prueba (trial).
 
 ---
 
