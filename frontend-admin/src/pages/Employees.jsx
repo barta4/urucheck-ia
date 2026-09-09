@@ -11,6 +11,7 @@ import {
   UserX,
   FileSpreadsheet,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   X,
   Smartphone,
@@ -22,6 +23,70 @@ import { useToast } from '../context/ToastContext'
 import ConfirmModal from '../components/ConfirmModal'
 
 const DAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
+const FULL_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+
+const timeToMinutes = (t) => {
+  if (!t) return 0
+  const parts = t.split(':')
+  return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10)
+}
+
+const normalizeDaysList = (days) => {
+  if (!days) return []
+  if (Array.isArray(days)) return days.map(d => parseInt(d, 10)).filter(d => !isNaN(d))
+  if (typeof days === 'string') {
+    return days.replace(/[{}[\]]/g, '').split(',').map(d => parseInt(d.trim(), 10)).filter(d => !isNaN(d))
+  }
+  return []
+}
+
+const getScheduleIntervals = (days, startTime, endTime) => {
+  const normDays = normalizeDaysList(days)
+  if (!normDays.length || !startTime || !endTime) return []
+  const startMin = timeToMinutes(startTime)
+  const endMin = timeToMinutes(endTime)
+  const intervals = []
+
+  if (startMin < endMin) {
+    for (const d of normDays) {
+      intervals.push({ day: d, start: startMin, end: endMin })
+    }
+  } else if (startMin > endMin) {
+    for (const d of normDays) {
+      intervals.push({ day: d, start: startMin, end: 1440 })
+      const nextDay = (d % 7) + 1
+      intervals.push({ day: nextDay, start: 0, end: endMin })
+    }
+  }
+  return intervals
+}
+
+const findScheduleConflict = (schedulesList, newDays, newStart, newEnd, excludeId = null) => {
+  if (!schedulesList || !schedulesList.length) return null
+  const newIntervals = getScheduleIntervals(newDays, newStart, newEnd)
+  for (const s of schedulesList) {
+    if (excludeId && String(s.id) === String(excludeId)) continue
+    const oldIntervals = getScheduleIntervals(s.day_of_week, s.start_time, s.end_time)
+    for (const nInt of newIntervals) {
+      for (const oInt of oldIntervals) {
+        if (nInt.day === oInt.day && nInt.start < oInt.end && oInt.start < nInt.end) {
+          const dayName = FULL_DAYS[nInt.day - 1] || `Día ${nInt.day}`
+          const slotLabel = s.slot_name || 'Turno Regular'
+          const startStr = s.start_time?.slice(0, 5)
+          const endStr = s.end_time?.slice(0, 5)
+          return {
+            conflict: true,
+            day: nInt.day,
+            dayName,
+            schedule: s,
+            message: `Conflicto de horario: El día ${dayName} se superpone con '${slotLabel}' (${startStr} – ${endStr}). No se permiten turnos en el mismo horario.`
+          }
+        }
+      }
+    }
+  }
+  return null
+}
 
 function Modal({ title, onClose, children, maxWidth = 'max-w-lg' }) {
   return (
@@ -224,8 +289,18 @@ export default function Employees() {
       warning('Debes seleccionar al menos un día de la semana')
       return
     }
+    if (schedForm.start_time === schedForm.end_time) {
+      warning('La hora de entrada y salida no pueden ser iguales')
+      return
+    }
     if (schedForm.break_mode === 'fixed' && (!schedForm.break_start_time || !schedForm.break_end_time)) {
       warning('Para descanso fijo debes definir hora de inicio y fin')
+      return
+    }
+
+    const conflict = findScheduleConflict(schedules, schedForm.day_of_week, schedForm.start_time, schedForm.end_time)
+    if (conflict) {
+      warning(conflict.message)
       return
     }
     try {
@@ -853,8 +928,16 @@ export default function Employees() {
               <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
                 {schedules.map(s => {
                   const gf = s.geofence_id ? geofences.find(g => g.id === s.geofence_id) : null
+                  const conflict = findScheduleConflict(schedules, s.day_of_week, s.start_time, s.end_time, s.id)
                   return (
-                    <div key={s.id} className="flex items-center justify-between bg-white border border-gray-200/80 rounded-2xl p-3.5 shadow-sm hover:border-blue-200 transition">
+                    <div
+                      key={s.id}
+                      className={`flex items-center justify-between rounded-2xl p-3.5 shadow-sm transition border ${
+                        conflict
+                          ? 'bg-amber-50/40 border-amber-300 hover:border-amber-400'
+                          : 'bg-white border-gray-200/80 hover:border-blue-200'
+                      }`}
+                    >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-gray-900 text-xs tracking-tight">
@@ -886,6 +969,12 @@ export default function Employees() {
                             </span>
                           )}
                         </div>
+                        {conflict && (
+                          <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-800 bg-amber-100/70 border border-amber-200 px-2 py-0.5 rounded-lg mt-1 w-fit">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+                            <span>Conflicto: se superpone los <strong>{conflict.dayName}</strong> con <em>{conflict.schedule.slot_name || 'otro turno'}</em> ({conflict.schedule.start_time?.slice(0, 5)} – {conflict.schedule.end_time?.slice(0, 5)})</span>
+                          </div>
+                        )}
                       </div>
                       <button
                         onClick={() => deleteSchedule(s.id)}

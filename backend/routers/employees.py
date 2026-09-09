@@ -6,6 +6,7 @@ from schemas import EmployeeCreate, EmployeeUpdate, EmployeeOut, ScheduleCreate,
 from auth import get_current_admin, get_password_hash
 from database import database
 from config import settings
+from schedule_validator import find_schedule_conflict
 import uuid
 import os
 
@@ -230,9 +231,27 @@ async def create_schedule(employee_id: str, data: ScheduleCreate, current_user=D
         if not gf:
             raise HTTPException(status_code=404, detail="Geocerca no encontrada o no pertenece a esta empresa")
 
+    # Validate start_time and end_time are not identical
+    if data.start_time == data.end_time:
+        raise HTTPException(status_code=400, detail="La hora de entrada y salida no pueden ser iguales")
+
     # Validate fixed break requires both times
     if data.break_mode == "fixed" and (not data.break_start_time or not data.break_end_time):
         raise HTTPException(status_code=400, detail="Modo fijo requiere break_start_time y break_end_time")
+
+    # Check for schedule overlap / collision with existing schedules of this employee
+    existing_schedules = await database.fetch_all(
+        "SELECT id, slot_name, day_of_week, start_time, end_time FROM schedules WHERE employee_id = :eid AND company_id = :cid",
+        {"eid": employee_id, "cid": company_id}
+    )
+    conflict = find_schedule_conflict(
+        existing_schedules=[dict(s) for s in existing_schedules],
+        new_days=data.day_of_week,
+        new_start=data.start_time,
+        new_end=data.end_time
+    )
+    if conflict:
+        raise HTTPException(status_code=400, detail=conflict["message"])
 
     await database.execute(
         """

@@ -1,8 +1,9 @@
 import logging
 import io
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from typing import Optional, Tuple, List, Dict, Any
 from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -23,27 +24,63 @@ class GeofenceCreate(BaseModel):
     radius_meters: int = Field(default=100, ge=10, le=10000)
 
 
+def _resolve_date_range(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    default_to_last_month: bool = True
+) -> Tuple[Optional[date], Optional[date]]:
+    """
+    Parses date strings safely. If default_to_last_month is True and dates are not specified,
+    defaults to the last 30 days (date.today() - 30 days up to date.today()).
+    """
+    d_from = None
+    if date_from and str(date_from).strip():
+        try:
+            d_from = date.fromisoformat(str(date_from).strip())
+        except Exception:
+            d_from = None
+
+    d_to = None
+    if date_to and str(date_to).strip():
+        try:
+            d_to = date.fromisoformat(str(date_to).strip())
+        except Exception:
+            d_to = None
+
+    if default_to_last_month:
+        today = date.today()
+        if not d_from and not d_to:
+            d_to = today
+            d_from = today - timedelta(days=30)
+        elif d_from and not d_to:
+            d_to = today
+        elif d_to and not d_from:
+            d_from = d_to - timedelta(days=30)
+
+    return d_from, d_to
+
+
 def _build_log_filters(
     params: dict,
-    employee_id: str | None,
-    date_from: date | None,
-    date_to: date | None,
-    status: str | None,
+    employee_id: Optional[str],
+    date_from: Optional[date],
+    date_to: Optional[date],
+    status: Optional[str],
 ) -> list[str]:
     """Build WHERE clause conditions for attendance_logs queries."""
     conditions = ["al.company_id = :cid"]
-    if employee_id:
+    if employee_id and str(employee_id).strip():
         conditions.append("al.employee_id = :eid")
-        params["eid"] = employee_id
+        params["eid"] = str(employee_id).strip()
     if date_from:
         conditions.append("DATE(al.timestamp) >= :date_from")
         params["date_from"] = date_from
     if date_to:
         conditions.append("DATE(al.timestamp) <= :date_to")
         params["date_to"] = date_to
-    if status:
+    if status and str(status).strip():
         conditions.append("al.status = :status")
-        params["status"] = status
+        params["status"] = str(status).strip()
     return conditions
 
 @router.get("/today")
@@ -121,18 +158,20 @@ async def today_status(admin=Depends(get_current_admin)):
 
 @router.get("/logs/export")
 async def export_logs(
-    employee_id: str = None,
-    date_from: date = None,
-    date_to: date = None,
-    status: str = None,
+    employee_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
     admin=Depends(get_current_admin),
 ):
     import openpyxl
     from openpyxl.styles import Font, PatternFill
 
+    d_from, d_to = _resolve_date_range(date_from, date_to, default_to_last_month=True)
+
     company_id = admin["company_id"]
     params = {"cid": company_id}
-    conditions = _build_log_filters(params, employee_id, date_from, date_to, status)
+    conditions = _build_log_filters(params, employee_id, d_from, d_to, status)
     where = " AND ".join(conditions)
     rows = await database.fetch_all(
         f"""
@@ -161,17 +200,32 @@ async def export_logs(
         cell.fill = header_fill
 
     for row in rows:
+        row_dict = dict(row)
+        ts = row_dict.get("timestamp")
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts and hasattr(ts, "strftime") else str(ts or "")
+        emp_name = str(row_dict.get("employee_name") or "Desconocido")
+        slot_name = str(row_dict.get("slot_name") or "Turno Regular")
+        geo_name = str(row_dict.get("geofence_name") or "General")
+        raw_type = str(row_dict.get("type") or "")
+        type_str = raw_type.replace("_", " ").title() if raw_type else "Desconocido"
+        raw_status = str(row_dict.get("status") or "")
+        status_str = raw_status.title() if raw_status else ""
+        early_mins = row_dict.get("early_minutes") or 0
+        lat = str(row_dict.get("latitude") or "")
+        lng = str(row_dict.get("longitude") or "")
+        streak = row_dict.get("streak_day") or 0
+
         ws.append([
-            row["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if row["timestamp"] else "",
-            row["employee_name"],
-            row.get("slot_name") or "Turno Regular",
-            row.get("geofence_name") or "General",
-            row["type"].replace("_", " ").title(),
-            row["status"].title() if row["status"] else "",
-            row.get("early_minutes") or 0,
-            row["latitude"] or "",
-            row["longitude"] or "",
-            row["streak_day"] or 0
+            ts_str,
+            emp_name,
+            slot_name,
+            geo_name,
+            type_str,
+            status_str,
+            early_mins,
+            lat,
+            lng,
+            streak
         ])
 
     for col in ws.columns:
@@ -180,7 +234,7 @@ async def export_logs(
         for cell in col:
             if cell.value:
                 max_length = max(max_length, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = max_length + 2
+        ws.column_dimensions[col_letter].width = max(max_length + 2, 12)
 
     stream = io.BytesIO()
     wb.save(stream)
@@ -194,17 +248,18 @@ async def export_logs(
 
 @router.get("/logs")
 async def get_logs(
-    employee_id: str = None,
-    date_from: date = None,
-    date_to: date = None,
-    status: str = None,
+    employee_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    status: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
     admin=Depends(get_current_admin),
 ):
+    d_from, d_to = _resolve_date_range(date_from, date_to, default_to_last_month=True)
     company_id = admin["company_id"]
     params = {"cid": company_id, "limit": limit, "offset": offset}
-    conditions = _build_log_filters(params, employee_id, date_from, date_to, status)
+    conditions = _build_log_filters(params, employee_id, d_from, d_to, status)
     where = " AND ".join(conditions)
     rows = await database.fetch_all(
         f"""
