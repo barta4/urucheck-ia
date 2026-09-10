@@ -5,14 +5,19 @@ import os
 import urllib.parse
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler = AsyncIOScheduler()
+except ImportError:
+    AsyncIOScheduler = None
+    CronTrigger = None
+    scheduler = None
 from database import database
 from config import settings
 from routers.notifications import send_push_notification
 
 logger = logging.getLogger(__name__)
-scheduler = AsyncIOScheduler()
 TZ = ZoneInfo(settings.TIMEZONE)
 
 
@@ -505,6 +510,9 @@ async def check_upcoming_shifts():
 # ─── Scheduler setup ─────────────────────────────────────────────────────────
 
 def start_scheduler():
+    if not scheduler:
+        logger.warning("APScheduler no está instalado. Las tareas programadas están inactivas.")
+        return
     scheduler.add_job(check_daily_absences, CronTrigger(hour=10, minute=0, timezone=TZ))
     scheduler.add_job(generate_monthly_report, CronTrigger(day=1, hour=0, minute=5, timezone=TZ))
     scheduler.add_job(cleanup_old_photos, CronTrigger(hour=3, minute=0, timezone=TZ))

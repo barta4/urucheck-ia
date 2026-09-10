@@ -241,11 +241,25 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
         }
       }
 
-      // Get GPS
-      const location = await Location.getCurrentPositionAsync({
+      // Get GPS with fallback to cached position
+      let location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
         timeInterval: 5000,
       }).catch(() => null)
+
+      if (!location) {
+        location = await Location.getLastKnownPositionAsync().catch(() => null)
+      }
+
+      if (!location) {
+        Alert.alert(
+          '📍 Ubicación no disponible',
+          'No se pudo obtener tu ubicación GPS. Asegúrate de encender el GPS y otorgar permisos de ubicación a la aplicación.'
+        )
+        setSending(false)
+        setVerifyingFace(false)
+        return
+      }
 
       // Warn if GPS accuracy is too poor (backend rejects > 150m)
       const accuracy = location?.coords?.accuracy
@@ -301,7 +315,23 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
           )
 
           if (upload.status >= 400) {
-            throw new Error(JSON.parse(upload.body)?.detail || 'Error en el servidor')
+            let errorMsg = 'Error en el servidor al registrar la asistencia'
+            try {
+              const parsed = JSON.parse(upload.body)
+              if (parsed?.detail) {
+                errorMsg = typeof parsed.detail === 'string'
+                  ? parsed.detail
+                  : (Array.isArray(parsed.detail)
+                      ? parsed.detail.map(d => d.msg || JSON.stringify(d)).join(' | ')
+                      : JSON.stringify(parsed.detail))
+              } else if (parsed?.message) {
+                errorMsg = parsed.message
+              }
+            } catch (_) {}
+            const serverErr = new Error(errorMsg)
+            serverErr.status = upload.status
+            serverErr.isServerResponse = true
+            throw serverErr
           }
           resData = JSON.parse(upload.body)
         } else {
@@ -317,6 +347,9 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
         }
 
         setFeedback(resData)
+        if (resData?.next_action) {
+          setTodayData(prev => prev ? { ...prev, next_action: resData.next_action } : prev)
+        }
         fetchTodayData()
       }
       // ─── OFFLINE MODE ───
@@ -348,11 +381,17 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
         headers: err.response?.headers
       })
 
-      // Only save to offline queue for real network errors, NOT server validation errors (4xx)
-      const isNetworkError = !isOnline || !err.response || err.message?.includes('Network') || err.message?.includes('network')
-      const isServerValidation = err.response?.status >= 400 && err.response?.status < 500
+      // Only save to offline queue for real network errors, NOT server responses (4xx, 5xx)
+      const isServerResponse = Boolean(err.response || err.isServerResponse || (err.status && err.status >= 400))
+      const isNetworkError = !isServerResponse && (
+        !isOnline ||
+        err.message?.toLowerCase().includes('network') ||
+        err.message?.toLowerCase().includes('timeout') ||
+        err.code === 'ECONNABORTED' ||
+        err.code === 'ERR_NETWORK'
+      )
 
-      if (isNetworkError && !isServerValidation) {
+      if (isNetworkError) {
         const queueItem = await addToQueue({
           latitude: location?.coords?.latitude,
           longitude: location?.coords?.longitude,
@@ -369,7 +408,18 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
           streak: todayData?.streak || 0,
         })
       } else {
-        Alert.alert('Error', err.response?.data?.detail || err.message || 'No se pudo conectar al servidor. Verifica tu conexión.')
+        let msg = 'No se pudo registrar la asistencia.'
+        const detail = err.response?.data?.detail
+        if (typeof detail === 'string') {
+          msg = detail
+        } else if (Array.isArray(detail)) {
+          msg = detail.map(d => (typeof d === 'object' ? (d.msg || JSON.stringify(d)) : String(d))).join(' | ')
+        } else if (detail && typeof detail === 'object') {
+          msg = detail.msg || JSON.stringify(detail)
+        } else if (err.message) {
+          msg = err.message
+        }
+        Alert.alert('Aviso', msg)
       }
     } finally {
       setSending(false)

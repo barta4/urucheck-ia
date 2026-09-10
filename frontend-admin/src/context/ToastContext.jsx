@@ -11,8 +11,23 @@ export function ToastProvider({ children }) {
   }, [])
 
   const showToast = useCallback((message, type = 'info', duration = 4000) => {
+    let text = message
+    if (typeof message === 'object' && message !== null) {
+      if (Array.isArray(message)) {
+        text = message.map(m => (typeof m === 'object' ? (m.msg || m.detail || JSON.stringify(m)) : String(m))).join(' | ')
+      } else if (message.detail) {
+        text = typeof message.detail === 'string' ? message.detail : (Array.isArray(message.detail) ? message.detail.map(d => d.msg || JSON.stringify(d)).join(' | ') : JSON.stringify(message.detail))
+      } else if (message.message) {
+        text = typeof message.message === 'string' ? message.message : JSON.stringify(message.message)
+      } else {
+        text = JSON.stringify(message)
+      }
+    } else if (typeof message !== 'string') {
+      text = String(message ?? '')
+    }
+
     const id = Date.now() + Math.random().toString(36).substring(2, 9)
-    const newToast = { id, message, type }
+    const newToast = { id, message: text, type }
     setToasts((prev) => [...prev, newToast])
 
     if (duration > 0) {

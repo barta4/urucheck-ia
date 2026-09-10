@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -403,6 +404,66 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept"],
     expose_headers=["Content-Disposition"],
 )
+
+FIELD_TRANSLATIONS_ES = {
+    "start_time": "Hora de entrada",
+    "end_time": "Hora de salida",
+    "day_of_week": "Días de la semana",
+    "slot_name": "Nombre / Etiqueta del turno",
+    "tolerance_minutes": "Tolerancia (minutos)",
+    "geofence_id": "Ubicación / Geocerca",
+    "break_mode": "Modalidad de descanso",
+    "break_duration_minutes": "Duración del descanso",
+    "break_start_time": "Hora de inicio del descanso",
+    "break_end_time": "Hora de fin del descanso",
+    "name": "Nombre completo",
+    "email": "Correo electrónico",
+    "password": "Contraseña",
+    "role": "Rol",
+    "document_id": "Documento / C.I.",
+    "phone": "Teléfono",
+    "address": "Dirección",
+    "latitude": "Latitud GPS",
+    "longitude": "Longitud GPS",
+    "radius_meters": "Radio de geocerca (metros)",
+    "gps_accuracy": "Precisión GPS",
+    "device_timestamp": "Hora del dispositivo",
+    "employee_id": "Empleado",
+    "company_id": "Empresa",
+    "company_slug": "Identificador de empresa",
+}
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for err in exc.errors():
+        loc = err.get("loc", [])
+        field_raw = str(loc[-1]) if loc else "campo"
+        field_label = FIELD_TRANSLATIONS_ES.get(field_raw, field_raw)
+        err_type = str(err.get("type", ""))
+        msg = str(err.get("msg", ""))
+
+        if "missing" in err_type:
+            errors.append(f"El campo '{field_label}' es obligatorio y no fue completado.")
+        elif "time" in err_type or "time" in msg.lower():
+            errors.append(f"El campo '{field_label}' debe tener un formato de hora válido (ej. HH:MM).")
+        elif "date" in err_type or "date" in msg.lower():
+            errors.append(f"El campo '{field_label}' debe tener un formato de fecha válido (AAAA-MM-DD).")
+        elif "integer" in err_type or "int" in err_type:
+            errors.append(f"El campo '{field_label}' debe ser un número entero válido.")
+        elif "float" in err_type or "number" in err_type:
+            errors.append(f"El campo '{field_label}' debe ser un número válido.")
+        elif "greater_than" in err_type:
+            errors.append(f"El valor de '{field_label}' es inferior al mínimo permitido.")
+        elif "less_than" in err_type:
+            errors.append(f"El valor de '{field_label}' supera el límite máximo permitido.")
+        elif "uuid" in err_type or "uuid" in msg.lower():
+            errors.append(f"El campo '{field_label}' tiene un formato de identificador no válido.")
+        else:
+            errors.append(f"Valor incorrecto en '{field_label}': {msg}.")
+
+    readable_detail = " | ".join(errors) if errors else "Datos del formulario incompletos o con formato inválido."
+    return JSONResponse(status_code=422, content={"detail": readable_detail, "errors": exc.errors()})
 
 @app.exception_handler(Exception)
 async def custom_exception_handler(request: Request, exc: Exception):

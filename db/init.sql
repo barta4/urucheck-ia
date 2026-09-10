@@ -115,7 +115,13 @@ CREATE TABLE schedules (
     day_of_week INT[] NOT NULL,
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
-    tolerance_minutes INT DEFAULT 5
+    slot_name VARCHAR(100),
+    tolerance_minutes INT DEFAULT 5,
+    geofence_id UUID REFERENCES geofences(id) ON DELETE SET NULL,
+    break_mode VARCHAR(20) DEFAULT 'flexible',
+    break_start_time TIME,
+    break_end_time TIME,
+    break_duration_minutes INT DEFAULT 45
 );
 
 CREATE INDEX idx_schedules_company ON schedules(company_id);
@@ -144,6 +150,7 @@ CREATE TABLE attendance_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
     employee_id UUID REFERENCES employees(id) ON DELETE CASCADE,
+    schedule_id UUID REFERENCES schedules(id) ON DELETE SET NULL,
     type VARCHAR(20) NOT NULL CHECK (type IN ('check_in','break_start','break_end','check_out')),
     timestamp TIMESTAMP NOT NULL,
     latitude DECIMAL(10,8),
@@ -151,6 +158,7 @@ CREATE TABLE attendance_logs (
     gps_accuracy FLOAT,
     photo_path VARCHAR(255),
     status VARCHAR(20) CHECK (status IN ('on_time','late','warning')),
+    early_minutes INT DEFAULT 0,
     streak_day INT DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW()
 );

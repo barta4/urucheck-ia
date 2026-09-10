@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, date, timedelta, time as time_type
+from zoneinfo import ZoneInfo
 from typing import Optional, TypedDict
 import math
 from database import database
@@ -91,8 +92,13 @@ async def get_employee_schedule(
             continue
         start_min = s_start.hour * 60 + s_start.minute - 30
         end_min = s_end.hour * 60 + s_end.minute + 30
-        if start_min <= current_minutes <= end_min:
-            return dict(row)
+        if s_start <= s_end:
+            if start_min <= current_minutes <= end_min:
+                return dict(row)
+        else:
+            # Shift crosses midnight (e.g. 22:00 to 06:00)
+            if current_minutes >= start_min or current_minutes <= end_min:
+                return dict(row)
 
     # 2. Fallback: closest start time
     best_schedule = None
@@ -154,14 +160,20 @@ async def update_streak(employee_id: str, company_id: str, is_on_time: bool, tod
         return 0
 
 
-async def get_next_mark_type(employee_id: str, company_id: str) -> str:
+async def get_next_mark_type(employee_id: str, company_id: str, current_dt: Optional[datetime] = None) -> str:
     """
     Determine the next expected attendance action for an employee.
     Supports multi-slot days and break_mode ('none', 'flexible', 'fixed').
     """
-    today = date.today()
-    now_time = datetime.now().time()
-    weekday = datetime.now().weekday()
+    tz = ZoneInfo(settings.TIMEZONE)
+    if current_dt:
+        now_local = current_dt.astimezone(tz) if current_dt.tzinfo else current_dt
+    else:
+        now_local = datetime.now(tz).replace(tzinfo=None)
+
+    today = now_local.date()
+    now_time = now_local.time()
+    weekday = now_local.weekday()
 
     logs = await database.fetch_all(
         """
@@ -361,10 +373,14 @@ async def evaluate_mark(
 
         # 2. Check scheduled end time
         if schedule:
+            s_start = ensure_time(schedule.get("start_time"))
             s_end = ensure_time(schedule.get("end_time"))
             tolerance_min = schedule.get("tolerance_minutes", 5)
             if s_end:
-                scheduled_end = datetime.combine(today, s_end)
+                if s_start and s_start > s_end:
+                    scheduled_end = datetime.combine(today + timedelta(days=1), s_end)
+                else:
+                    scheduled_end = datetime.combine(today, s_end)
                 min_departure_time = scheduled_end - timedelta(minutes=tolerance_min)
 
                 if timestamp < min_departure_time:

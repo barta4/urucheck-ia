@@ -124,7 +124,7 @@ async def create_employee(data: EmployeeCreate, current_user=Depends(get_current
         {"cid": company_id, "email": clean_email}
     )
     if existing:
-        raise HTTPException(status_code=400, detail="Email ya registrado")
+        raise HTTPException(status_code=400, detail="Ya existe un empleado registrado con este correo electrónico.")
 
     hashed = get_password_hash(data.password)
     employee_id = await database.execute(
@@ -156,7 +156,7 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user=D
         {"eid": employee_id, "cid": company_id}
     )
     if not emp:
-        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        raise HTTPException(status_code=404, detail="El empleado no existe o no pertenece a su empresa.")
 
     updates = {}
     if data.name: updates["name"] = data.name
@@ -167,7 +167,7 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user=D
             {"cid": company_id, "email": clean_email, "eid": employee_id}
         )
         if existing:
-            raise HTTPException(status_code=400, detail="Email ya registrado por otro empleado")
+            raise HTTPException(status_code=400, detail="El correo electrónico ya está registrado por otro empleado.")
         updates["email"] = clean_email
     if data.password: updates["password_hash"] = get_password_hash(data.password)
     if data.active is not None: updates["active"] = data.active
@@ -213,34 +213,86 @@ async def get_schedules(employee_id: str, current_user=Depends(get_current_admin
 async def create_schedule(employee_id: str, data: ScheduleCreate, current_user=Depends(get_current_admin)):
     company_id = current_user["company_id"]
 
+    # Validate days of week
+    if not data.day_of_week:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe seleccionar al menos un día de la semana para asignar el horario."
+        )
+    for day in data.day_of_week:
+        if day < 1 or day > 7:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Día inválido ({day}). Los días deben ser del 1 (Lunes) al 7 (Domingo)."
+            )
+
     # Validate break_mode
     if data.break_mode not in ("none", "flexible", "fixed"):
-        raise HTTPException(status_code=400, detail="break_mode debe ser 'none', 'flexible' o 'fixed'")
+        raise HTTPException(
+            status_code=400,
+            detail="La modalidad de descanso debe ser 'none' (Sin descanso), 'flexible' (Flexible) o 'fixed' (Horario fijo)."
+        )
 
     # Verify employee belongs to company
     emp = await database.fetch_one(
-        "SELECT id FROM employees WHERE id = :eid AND company_id = :cid",
+        "SELECT id, name FROM employees WHERE id = :eid AND company_id = :cid",
         {"eid": employee_id, "cid": company_id}
     )
     if not emp:
-        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        raise HTTPException(
+            status_code=404,
+            detail="El empleado seleccionado no existe o no pertenece a su empresa."
+        )
 
     # Validate geofence belongs to company if provided
     if data.geofence_id:
         gf = await database.fetch_one(
-            "SELECT id FROM geofences WHERE id = :gid AND company_id = :cid",
+            "SELECT id, name FROM geofences WHERE id = :gid AND company_id = :cid",
             {"gid": str(data.geofence_id), "cid": company_id}
         )
         if not gf:
-            raise HTTPException(status_code=404, detail="Geocerca no encontrada o no pertenece a esta empresa")
+            raise HTTPException(
+                status_code=404,
+                detail="La ubicación o geocerca seleccionada no existe o no pertenece a su empresa."
+            )
 
-    # Validate start_time and end_time are not identical
+    # Validate start_time and end_time
+    if not data.start_time or not data.end_time:
+        raise HTTPException(
+            status_code=400,
+            detail="Debe especificar tanto la hora de entrada como la hora de salida del turno."
+        )
     if data.start_time == data.end_time:
-        raise HTTPException(status_code=400, detail="La hora de entrada y salida no pueden ser iguales")
+        raise HTTPException(
+            status_code=400,
+            detail="La hora de entrada y la hora de salida no pueden ser iguales."
+        )
 
-    # Validate fixed break requires both times
-    if data.break_mode == "fixed" and (not data.break_start_time or not data.break_end_time):
-        raise HTTPException(status_code=400, detail="Modo fijo requiere break_start_time y break_end_time")
+    # Validate tolerance
+    if data.tolerance_minutes is not None and (data.tolerance_minutes < 0 or data.tolerance_minutes > 120):
+        raise HTTPException(
+            status_code=400,
+            detail="La tolerancia debe ser un valor entre 0 y 120 minutos."
+        )
+
+    # Validate break settings
+    if data.break_mode == "fixed":
+        if not data.break_start_time or not data.break_end_time:
+            raise HTTPException(
+                status_code=400,
+                detail="Para el modo de descanso en horario fijo, debe especificar la hora de inicio y la de fin del descanso."
+            )
+        if data.break_start_time == data.break_end_time:
+            raise HTTPException(
+                status_code=400,
+                detail="La hora de inicio y fin del descanso fijo no pueden ser iguales."
+            )
+    elif data.break_mode == "flexible":
+        if data.break_duration_minutes is not None and (data.break_duration_minutes <= 0 or data.break_duration_minutes > 480):
+            raise HTTPException(
+                status_code=400,
+                detail="La duración del descanso flexible debe ser mayor a 0 y menor a 480 minutos (8 horas)."
+            )
 
     # Check for schedule overlap / collision with existing schedules of this employee
     existing_schedules = await database.fetch_all(
@@ -256,37 +308,52 @@ async def create_schedule(employee_id: str, data: ScheduleCreate, current_user=D
     if conflict:
         raise HTTPException(status_code=400, detail=conflict["message"])
 
-    await database.execute(
-        """
-        INSERT INTO schedules (company_id, employee_id, day_of_week, start_time, end_time, slot_name,
-                               tolerance_minutes, geofence_id, break_mode, break_start_time, break_end_time, break_duration_minutes)
-        VALUES (:cid, :eid, :days, :start, :end, :slot_name, :tol, :geofence_id, :break_mode, :break_start, :break_end, :break_dur)
-        """,
-        {
-            "cid": company_id,
-            "eid": employee_id,
-            "days": data.day_of_week,
-            "start": data.start_time,
-            "end": data.end_time,
-            "slot_name": data.slot_name.strip() if data.slot_name else None,
-            "tol": data.tolerance_minutes,
-            "geofence_id": str(data.geofence_id) if data.geofence_id else None,
-            "break_mode": data.break_mode,
-            "break_start": data.break_start_time,
-            "break_end": data.break_end_time,
-            "break_dur": data.break_duration_minutes or 45,
-        }
-    )
-    return {"message": "Horario asignado"}
+    try:
+        await database.execute(
+            """
+            INSERT INTO schedules (company_id, employee_id, day_of_week, start_time, end_time, slot_name,
+                                   tolerance_minutes, geofence_id, break_mode, break_start_time, break_end_time, break_duration_minutes)
+            VALUES (:cid, :eid, :days, :start, :end, :slot_name, :tol, :geofence_id, :break_mode, :break_start, :break_end, :break_dur)
+            """,
+            {
+                "cid": company_id,
+                "eid": employee_id,
+                "days": data.day_of_week,
+                "start": data.start_time,
+                "end": data.end_time,
+                "slot_name": data.slot_name.strip() if data.slot_name else None,
+                "tol": data.tolerance_minutes if data.tolerance_minutes is not None else 5,
+                "geofence_id": str(data.geofence_id) if data.geofence_id else None,
+                "break_mode": data.break_mode,
+                "break_start": data.break_start_time if data.break_mode == "fixed" else None,
+                "break_end": data.break_end_time if data.break_mode == "fixed" else None,
+                "break_dur": data.break_duration_minutes if data.break_mode == "flexible" else None,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error al guardar horario en base de datos: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo guardar el horario en la base de datos. Verifique que los campos sean válidos."
+        )
+
+    return {"message": "Horario asignado exitosamente"}
 
 @router.delete("/{employee_id}/schedules/{schedule_id}")
 async def delete_schedule(employee_id: str, schedule_id: str, current_user=Depends(get_current_admin)):
     company_id = current_user["company_id"]
+    existing = await database.fetch_one(
+        "SELECT id FROM schedules WHERE id = :sid AND employee_id = :eid AND company_id = :cid",
+        {"sid": schedule_id, "eid": employee_id, "cid": company_id}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="El horario no existe o ya fue eliminado previamente.")
+
     await database.execute(
         "DELETE FROM schedules WHERE id = :sid AND employee_id = :eid AND company_id = :cid",
         {"sid": schedule_id, "eid": employee_id, "cid": company_id}
     )
-    return {"message": "Horario eliminado"}
+    return {"message": "Horario eliminado correctamente"}
 
 # ─── Face enrollment endpoints ───────────────────────────────────────────────
 

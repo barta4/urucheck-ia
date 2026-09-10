@@ -271,7 +271,16 @@ export default function Employees() {
 
   const openSchedule = async (emp) => {
     setSchedForm({
-      day_of_week: [], start_time: '09:00', end_time: '18:00', tolerance_minutes: 5, geofence_id: ''
+      slot_name: '',
+      day_of_week: [],
+      start_time: '09:00',
+      end_time: '18:00',
+      tolerance_minutes: 5,
+      geofence_id: '',
+      break_mode: 'flexible',
+      break_duration_minutes: 45,
+      break_start_time: '',
+      break_end_time: ''
     })
     setShowSchedule(emp)
     fetchSchedules(emp.id)
@@ -285,16 +294,42 @@ export default function Employees() {
 
   const addSchedule = async (e) => {
     e.preventDefault()
-    if (schedForm.day_of_week.length === 0) {
-      warning('Debes seleccionar al menos un día de la semana')
+    if (!schedForm.day_of_week || schedForm.day_of_week.length === 0) {
+      warning('Debes seleccionar al menos un día de la semana (ej. Lun, Mar, Mié)')
+      return
+    }
+    if (!schedForm.start_time) {
+      warning('Debes especificar la hora de entrada del turno')
+      return
+    }
+    if (!schedForm.end_time) {
+      warning('Debes especificar la hora de salida del turno')
       return
     }
     if (schedForm.start_time === schedForm.end_time) {
       warning('La hora de entrada y salida no pueden ser iguales')
       return
     }
-    if (schedForm.break_mode === 'fixed' && (!schedForm.break_start_time || !schedForm.break_end_time)) {
-      warning('Para descanso fijo debes definir hora de inicio y fin')
+    if (schedForm.break_mode === 'fixed') {
+      if (!schedForm.break_start_time || !schedForm.break_end_time) {
+        warning('Para descanso en horario fijo, debes ingresar tanto la hora de inicio como la de fin del descanso')
+        return
+      }
+      if (schedForm.break_start_time === schedForm.break_end_time) {
+        warning('La hora de inicio y de fin del descanso fijo no pueden ser iguales')
+        return
+      }
+    }
+    if (schedForm.break_mode === 'flexible') {
+      const dur = parseInt(schedForm.break_duration_minutes, 10)
+      if (isNaN(dur) || dur <= 0 || dur > 360) {
+        warning('La duración del descanso flexible debe ser un número entre 1 y 360 minutos')
+        return
+      }
+    }
+    const tol = parseInt(schedForm.tolerance_minutes, 10)
+    if (isNaN(tol) || tol < 0 || tol > 120) {
+      warning('La tolerancia debe ser un valor numérico entre 0 y 120 minutos')
       return
     }
 
@@ -306,32 +341,40 @@ export default function Employees() {
     try {
       await api.post(`/employees/${showSchedule.id}/schedules`, {
         employee_id: showSchedule.id,
-        slot_name: schedForm.slot_name.trim() || null,
+        slot_name: schedForm.slot_name ? schedForm.slot_name.trim() : null,
         day_of_week: schedForm.day_of_week,
         start_time: schedForm.start_time,
         end_time: schedForm.end_time,
-        tolerance_minutes: schedForm.tolerance_minutes,
+        tolerance_minutes: tol,
         geofence_id: schedForm.geofence_id || null,
-        break_mode: schedForm.break_mode,
-        break_duration_minutes: schedForm.break_mode === 'flexible' ? parseInt(schedForm.break_duration_minutes, 10) || 45 : null,
+        break_mode: schedForm.break_mode || 'flexible',
+        break_duration_minutes: schedForm.break_mode === 'flexible' ? (parseInt(schedForm.break_duration_minutes, 10) || 45) : null,
         break_start_time: schedForm.break_mode === 'fixed' ? schedForm.break_start_time : null,
         break_end_time: schedForm.break_mode === 'fixed' ? schedForm.break_end_time : null
       })
       success('Horario asignado correctamente')
-      setSchedForm(f => ({ ...f, slot_name: '', day_of_week: [], geofence_id: '' }))
+      setSchedForm(f => ({
+        ...f,
+        slot_name: '',
+        day_of_week: [],
+        geofence_id: '',
+        break_start_time: '',
+        break_end_time: ''
+      }))
       fetchSchedules(showSchedule.id)
     } catch (err) {
-      error(err.response?.data?.detail || 'Error al guardar el horario')
+      const detail = err.response?.data?.detail
+      error(detail || err.message || 'Error al guardar el horario')
     }
   }
 
   const deleteSchedule = async (schedId) => {
     try {
       await api.delete(`/employees/${showSchedule.id}/schedules/${schedId}`)
-      success('Horario eliminado')
+      success('Horario eliminado correctamente')
       fetchSchedules(showSchedule.id)
     } catch (e) {
-      error('Error al eliminar horario')
+      error(e.response?.data?.detail || 'Error al eliminar horario')
     }
   }
 

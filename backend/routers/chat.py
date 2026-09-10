@@ -1,7 +1,10 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 from datetime import date, datetime
 from auth import get_current_admin
 from database import database
@@ -15,6 +18,8 @@ class ChatRequest(BaseModel):
     message: str
 
 def init_gemini():
+    if not genai:
+        raise HTTPException(status_code=503, detail="El servicio de chat de Inteligencia Artificial no está disponible en este entorno.")
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         raise HTTPException(status_code=500, detail="Gemini API Key no configurada en el servidor.")

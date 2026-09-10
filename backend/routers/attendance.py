@@ -85,11 +85,23 @@ async def check_geofence(employee_id: str, company_id: str, lat: float, lng: flo
     return False
 
 
+def _parse_optional_float(val: Optional[object]) -> Optional[float]:
+    if val is None:
+        return None
+    val_str = str(val).strip()
+    if not val_str or val_str.lower() in ("none", "null", "undefined"):
+        return None
+    try:
+        return float(val_str)
+    except (ValueError, TypeError):
+        return None
+
+
 @router.post("/mark", response_model=AttendanceResponse)
 async def mark_attendance(
-    latitude: Optional[float] = Form(None),
-    longitude: Optional[float] = Form(None),
-    gps_accuracy: Optional[float] = Form(None),
+    latitude: Optional[str] = Form(None),
+    longitude: Optional[str] = Form(None),
+    gps_accuracy: Optional[str] = Form(None),
     device_timestamp: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     current_user=Depends(get_current_user)
@@ -97,21 +109,25 @@ async def mark_attendance(
     employee_id = str(current_user["id"])
     company_id = str(current_user["company_id"])
 
-    if latitude is None or longitude is None:
+    lat_val = _parse_optional_float(latitude)
+    lng_val = _parse_optional_float(longitude)
+    acc_val = _parse_optional_float(gps_accuracy)
+
+    if lat_val is None or lng_val is None:
         return AttendanceResponse(
             status="warning",
             alert_type="yellow",
             title="GPS no disponible",
-            message="No se pudo obtener su ubicación precisa. Active el GPS e intente nuevamente."
+            message="No se pudo obtener su ubicación precisa. Active el GPS o conceda los permisos de ubicación e intente nuevamente."
         )
 
     # Reject GPS readings with excessively poor accuracy
-    if gps_accuracy is not None and gps_accuracy > settings.MAX_GPS_ACCURACY_METERS:
+    if acc_val is not None and acc_val > settings.MAX_GPS_ACCURACY_METERS:
         return AttendanceResponse(
             status="warning",
             alert_type="yellow",
             title="Precisión GPS insuficiente",
-            message=f"La precisión GPS es muy baja ({gps_accuracy:.0f}m). Acérquese a una ventana y vuelva a intentar."
+            message=f"La precisión GPS es muy baja ({acc_val:.0f}m). Acérquese a una ventana y vuelva a intentar."
         )
 
     tz = ZoneInfo(settings.TIMEZONE)
@@ -125,7 +141,7 @@ async def mark_attendance(
         logger.warning("[attendance] Device timestamp parse failed: %s", device_timestamp)
         timestamp = datetime.now(tz).replace(tzinfo=None)
 
-    mark_type = await get_next_mark_type(employee_id, company_id)
+    mark_type = await get_next_mark_type(employee_id, company_id, current_dt=timestamp)
     if mark_type == "already_completed":
         return AttendanceResponse(
             status="warning",
@@ -137,7 +153,11 @@ async def mark_attendance(
     schedule = await get_employee_schedule(employee_id, company_id, timestamp.weekday(), current_time=timestamp.time())
     geofence_id = schedule.get("geofence_id") if schedule else None
 
-    in_geofence = await check_geofence(employee_id, company_id, latitude, longitude, geofence_id=geofence_id)
+    # If the active schedule explicitly has no geofence restriction, all locations are permitted
+    if schedule and geofence_id is None:
+        in_geofence = True
+    else:
+        in_geofence = await check_geofence(employee_id, company_id, lat_val, lng_val, geofence_id=geofence_id)
     if not in_geofence:
         gf_name = "el lugar de trabajo asignado"
         if geofence_id:
@@ -221,28 +241,35 @@ async def mark_attendance(
     feedback = await evaluate_mark(employee_id, company_id, mark_type, timestamp)
     sched_id = str(schedule["id"]) if schedule and "id" in schedule else None
 
-    log_id = await database.execute(
-        """
-        INSERT INTO attendance_logs
-        (company_id, employee_id, schedule_id, type, timestamp, latitude, longitude, gps_accuracy, photo_path, status, early_minutes, streak_day)
-        VALUES (:cid, :eid, :sched_id, :type, :ts, :lat, :lng, :acc, :photo, :status, :early_min, :streak)
-        RETURNING id
-        """,
-        {
-            "cid": company_id,
-            "eid": employee_id,
-            "sched_id": sched_id,
-            "type": mark_type,
-            "ts": timestamp,
-            "lat": latitude,
-            "lng": longitude,
-            "acc": gps_accuracy,
-            "photo": photo_path,
-            "status": feedback["status"],
-            "early_min": feedback.get("early_minutes", 0),
-            "streak": feedback.get("streak") or 0
-        }
-    )
+    try:
+        log_id = await database.execute(
+            """
+            INSERT INTO attendance_logs
+            (company_id, employee_id, schedule_id, type, timestamp, latitude, longitude, gps_accuracy, photo_path, status, early_minutes, streak_day)
+            VALUES (:cid, :eid, :sched_id, :type, :ts, :lat, :lng, :acc, :photo, :status, :early_min, :streak)
+            RETURNING id
+            """,
+            {
+                "cid": company_id,
+                "eid": employee_id,
+                "sched_id": sched_id,
+                "type": mark_type,
+                "ts": timestamp,
+                "lat": lat_val,
+                "lng": lng_val,
+                "acc": acc_val,
+                "photo": photo_path,
+                "status": feedback["status"],
+                "early_min": feedback.get("early_minutes", 0),
+                "streak": feedback.get("streak") or 0
+            }
+        )
+    except Exception as db_err:
+        logger.error("[attendance] Fallo al insertar registro de asistencia en BD: %s", db_err, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al registrar la marcación en base de datos: {str(db_err)}"
+        )
 
     try:
         ts_str = timestamp.strftime("%H:%M")
@@ -259,7 +286,7 @@ async def mark_attendance(
     except Exception as ex:
         logger.warning("[attendance] Notificación fallida: %s", ex)
 
-    feedback["next_action"] = await get_next_mark_type(employee_id, company_id)
+    feedback["next_action"] = await get_next_mark_type(employee_id, company_id, current_dt=timestamp)
     feedback["log_id"] = str(log_id)
 
     if face_verified is not None:
@@ -274,12 +301,13 @@ async def mark_attendance(
 
 @router.get("/today")
 async def get_today_logs(current_user=Depends(get_current_user)):
-    from datetime import date
+    tz = ZoneInfo(settings.TIMEZONE)
+    now_local = datetime.now(tz)
     employee_id = str(current_user["id"])
     company_id = str(current_user["company_id"])
-    today = date.today()
-    now_time = datetime.now().time()
-    weekday = datetime.now().weekday()
+    today = now_local.date()
+    now_time = now_local.time()
+    weekday = now_local.weekday()
 
     logs = await database.fetch_all(
         """
@@ -290,7 +318,7 @@ async def get_today_logs(current_user=Depends(get_current_user)):
         """,
         {"eid": employee_id, "cid": company_id, "today": today}
     )
-    next_action = await get_next_mark_type(employee_id, company_id)
+    next_action = await get_next_mark_type(employee_id, company_id, current_dt=now_local.replace(tzinfo=None))
     active_sched = await get_employee_schedule(employee_id, company_id, weekday, current_time=now_time)
 
     geofence_name = "Ubicación General"
