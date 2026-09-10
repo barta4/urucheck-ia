@@ -34,7 +34,7 @@
 5. **Despliegue Multi-Plataforma en Docker Hub:**
    * Imágenes publicadas para `linux/amd64`:
      * 🏷️ `docker.io/alfredobartaburu/urucheck-backend:v2.10` (y `latest`)
-     * 🏷️ `docker.io/alfredobartaburu/urucheck-frontend:v2.3` (y `latest`)
+     * 🏷️ `docker.io/alfredobartaburu/urucheck-frontend:v2.8` (y `latest`)
    * `docker-compose.yml` sincronizado para despliegue directo en Dokploy con Traefik.
 
 ---

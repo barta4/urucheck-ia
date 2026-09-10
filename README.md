@@ -5,7 +5,7 @@
 ## 🐳 Imágenes Docker Hub (v2.10)
 
 * **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.10` (y `latest`)
-* **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.3` (y `latest`)
+* **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.8` (y `latest`)
 
 ---
 
