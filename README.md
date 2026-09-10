@@ -1,10 +1,10 @@
 # Sistema de Control de Asistencia Gamificado y Biométrico — UruCheck IA (SaaS Multi-Empresa)
 
-> **v2.3.0** — Sistema multi-tenant con reconocimiento facial, multi-turnos y geocercas diferenciadas, control estricto de descansos/pausas, alerta de salidas tempranas, panel SaaS Master con cobros en USD, integración MercadoPago y eliminación de empresas.
+> **v2.10.0** — Sistema multi-tenant con reconocimiento facial, multi-turnos y geocercas diferenciadas, ciclo inteligente de marcación de jornada (Entrada/Descanso/Salida), almacenamiento defensivo de fotos en volúmenes Docker, panel SaaS Master con cobros en USD, integración MercadoPago y eliminación de empresas.
 
-## 🐳 Imágenes Docker Hub (v2.3)
+## 🐳 Imágenes Docker Hub (v2.10)
 
-* **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.3` (y `latest`)
+* **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.10` (y `latest`)
 * **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.3` (y `latest`)
 
 ---

@@ -1,23 +1,41 @@
 # 📝 TODO — Estado Actual y Tareas del Sistema
 
-> **Última actualización:** Agosto 2026
+> **Última actualización:** Septiembre 2026 — **Versión 2.10.0**
 
 ---
 
-## ✅ Resuelto Recientemente (v2.2.0)
+## ✅ Resuelto Recientemente (v2.10.0)
 
-1. **Panel SaaS Master y Gestión Financiera en USD:**
-   * **Eliminación y Baja de Empresas** (`backend/routers/companies.py` & `SaasCompanies.jsx`): Endpoint `DELETE /api/companies/{id}` con soft-delete en cascada y modal de confirmación con doble validación de seguridad.
-   * **Gestión de Cobros y Facturación SaaS** (`backend/routers/metrics.py` & `SaasBilling.jsx`): Resumen financiero en USD (MRR, Total Recaudado), estado por empresa (Al día, En Trial, Vencido), registro de pagos manuales con extensión de suscripciones (+30/+60/+90/+365 días), generador de links de checkout de MercadoPago e historial global con exportación CSV.
-   * **Integración MercadoPago / MercadoLibre** (`backend/mp_oauth.py` & `SaasMercadoPago.jsx`): Configuración de credenciales de producción/OAuth en base de datos sin reiniciar backend y test en tiempo real con la API de MercadoPago (`/users/me`).
-   * **Estandarización Internacional a USD**: Todas las tarifas, cobros, facturas y checkout configurados en Dólares (USD).
-2. **Control Estricto de Horarios, Multi-Turnos y Descansos:**
-   * **Multi-Turnos por Empleado**: Horarios por franja (`slot_name`) con geocercas diferenciadas por horario del día.
-   * **Modos de Descanso**: Configuración de descanso fijo (`fixed`) con hora de inicio/fin o flexible (`flexible`) con duración máxima permitida.
-   * **Alertas de Salida Temprana**: Detección y advertencia al empleado en la App móvil y registro de minutos anticipados en backend ante salidas no autorizadas.
-3. **Publicación y Despliegue v2.2:**
-   * Imágenes publicadas en Docker Hub: `alfredobartaburu/urucheck-backend:v2.2` y `alfredobartaburu/urucheck-frontend:v2.2`.
-   * Código fuente completo sincronizado en GitHub: `https://github.com/barta4/urucheck-ia`.
+1. **Corrección del Ciclo Dinámico de Marcación (`GET /api/attendance/today`):**
+   * Eliminado el error `UnboundLocalError` en `backend/routers/attendance.py` ocasionado por una importación interna de `settings`.
+   * Ahora la app móvil recibe el estado del día con código HTTP 200 y el botón cambia dinámicamente según la etapa de la jornada:
+     * 🟢 **Registrar Entrada** ➔ ☕ **Iniciar Descanso** ➔ 💼 **Volver al Trabajo** ➔ 🔴 **Registrar Salida** ➔ ✅ **Jornada Completa**.
+
+2. **Permisos de Volúmenes en Docker y Guardado de Fotos (`v2.9` / `v2.10`):**
+   * Ajustado `backend/Dockerfile` otorgando permisos `chmod -R 777 /app/photos` y liberando la ejecución de usuario para convivir de forma nativa con los volúmenes de Docker en VPS (`photos_data:/app/photos`).
+   * Capa defensiva en `attendance.py` y `leaves.py` con respaldo automático a `/tmp/photos` y `/tmp/photos/certificates` en caso de cualquier bloqueo de sistema de archivos.
+
+3. **Auditoría Técnica y Refactorización Integral:**
+   * **Servicio de Pagos Centralizado (`backend/payment_service.py`):** Unificación de checkout preferences de MercadoPago, verificación criptográfica HMAC SHA-256 de webhooks y procesamiento atómico de notificaciones. Eliminadas más de 190 líneas de código duplicado.
+   * **Seguridad en Consultas SQL (`backend/db_utils.py`):** Helper `build_dynamic_update_query` con lista blanca de columnas para evitar inyecciones SQL en actualizaciones dinámicas.
+   * **Frontend Admin Limpio (`frontend-admin`):** Módulo `fileDownloader.js` para descargas Blob con liberación de memoria y exportador CSV UTF-8 con BOM compatible con Microsoft Excel en todas las páginas.
+   * **Constantes Compartidas de Asistencia:** Módulos centralizados `constants/attendance.js` en Frontend Admin y Mobile App.
+   * **Corrección de Deprecaciones:** Migración de `datetime.utcnow()` a `datetime.now(timezone.utc)` y modelos a Pydantic v2 `ConfigDict`.
+   * **Corrección de UI Móvil:** Resuelto error de estilos no definidos en `LeavesScreen.jsx`.
+
+4. **Suite de Pruebas Automatizadas:**
+   * 52 tests automatizados pasando al 100% en `pytest backend/tests/` cubriendo:
+     * Verificación de zonas horarias en horario nocturno.
+     * Avance de estados de asistencia y geocercas permisivas.
+     * Seguridad de autenticación y tokens JWT.
+     * Firmas de webhooks HMAC y expiración.
+     * Queries dinámicas y exportación de logs.
+
+5. **Despliegue Multi-Plataforma en Docker Hub:**
+   * Imágenes publicadas para `linux/amd64`:
+     * 🏷️ `docker.io/alfredobartaburu/urucheck-backend:v2.10` (y `latest`)
+     * 🏷️ `docker.io/alfredobartaburu/urucheck-frontend:v2.3` (y `latest`)
+   * `docker-compose.yml` sincronizado para despliegue directo en Dokploy con Traefik.
 
 ---
 
@@ -28,23 +46,29 @@ Para la descripción detallada de cada funcionalidad, consulta el archivo [ROADM
 ### 1. Frontend Web Admin (UI/UX)
 - [x] Reemplazar `alert()` y `confirm()` nativos por Toasts reactivos.
 - [x] Editor visual interactivo de geocercas sobre el mapa de Leaflet.
-- [x] Importador / Exportador masivo de empleados en CSV.
+- [x] Importador / Exportador masivo de empleados en CSV (UTF-8 con BOM).
 - [ ] Implementar WebSocket / SSE para actualización del Dashboard en tiempo real.
 
 ### 2. App Móvil (Expo / React Native)
+- [x] Ciclo dinámico inteligente de botones (Entrada ➔ Descanso ➔ Retorno ➔ Salida).
+- [x] Manejo de colas offline con sincronización automática al recuperar red.
 - [ ] Detección de vida facial (Anti-spoofing / Liveness challenge).
 - [ ] Autenticación biométrica nativa del dispositivo (`expo-local-authentication` para Huella / Face ID).
 - [ ] Sincronización en segundo plano (`expo-task-manager` / `BackgroundFetch`).
 
 ### 3. Backend & Lógica
 - [x] Generación de planillas y reportes mensuales en **PDF oficial con código QR**.
+- [x] Capa defensiva de almacenamiento de archivos y certificados médicos.
+- [x] Suite de pruebas automatizadas con pytest (52 tests).
 - [ ] Migraciones versionadas de base de datos con **Alembic**.
 - [ ] Integración con WhatsApp Cloud API para alertas instantáneas.
 
 ### 4. Despliegue en Dokploy (Traefik)
 - [x] Configurar labels de Traefik en `docker-compose.yml` para enrutamiento directo de `backend:8000` y `frontend:80`.
+- [x] Imágenes Docker optimizadas para `linux/amd64` con versionado incremental para evitar colisiones de caché.
 - [ ] Script de copias de seguridad automáticas diarias de PostgreSQL con rotación a 30 días.
 
 ### 5. SaaS & Monetización
 - [x] Barra de cuenta regresiva de días de prueba (Trial) y modal de Upgrade a planes Pro/Enterprise.
+- [x] Gestión de cobros en USD con pasarela MercadoPago y registro manual de pagos.
 - [ ] Soporte Multi-Idioma (i18n: Español, Inglés, Portugués).
