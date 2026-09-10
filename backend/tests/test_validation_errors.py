@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # Import the translation dict and handler from main without loading heavy optional routers
 from main import FIELD_TRANSLATIONS_ES, validation_exception_handler
 
-test_app = FastAPI()
-test_app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app_for_testing = FastAPI()
+app_for_testing.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 class DummySchedulePayload(BaseModel):
     start_time: time
@@ -22,11 +22,11 @@ class DummySchedulePayload(BaseModel):
     day_of_week: List[int]
     tolerance_minutes: Optional[int] = 5
 
-@test_app.post("/test-schedule")
+@app_for_testing.post("/test-schedule")
 def dummy_endpoint(payload: DummySchedulePayload):
     return {"status": "ok"}
 
-client = TestClient(test_app)
+client = TestClient(app_for_testing)
 
 def test_validation_error_handler_spanish_translation():
     """

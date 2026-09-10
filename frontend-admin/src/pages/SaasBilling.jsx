@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../context/ToastContext'
 import api from '../api'
+import { downloadCsvFromData } from '../utils/fileDownloader'
 
 const STATUS_BADGES = {
   up_to_date: { label: 'Al día', color: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
@@ -133,16 +134,9 @@ export default function SaasBilling() {
       p.method,
       p.mercado_pago_status,
       p.mercado_pago_id || '',
-      `"${(p.notes || '').replace(/"/g, '""')}"`
+      p.notes || ''
     ])
-    const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n')
-    const encodedUri = encodeURI(csvContent)
-    const link = document.createElement('a')
-    link.setAttribute('href', encodedUri)
-    link.setAttribute('download', `historial_pagos_urucheck_${new Date().toISOString().slice(0, 10)}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    downloadCsvFromData(`historial_pagos_urucheck_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
   }
 
   if (loading) return <div className="p-8 text-gray-400 font-medium">Cargando estado financiero...</div>

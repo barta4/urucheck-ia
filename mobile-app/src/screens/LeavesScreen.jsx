@@ -84,7 +84,16 @@ export default function LeavesScreen({ onBack }) {
           headers: { Authorization: `Bearer ${token}` },
           parameters: { start_date: startDate, end_date: endDate, reason }
         })
-        if (upload.status >= 400) throw new Error(JSON.parse(upload.body)?.detail || 'Error')
+        if (upload.status >= 400) {
+          let errorMsg = 'Error al enviar la solicitud'
+          try {
+            const parsed = JSON.parse(upload.body)
+            errorMsg = parsed?.detail || errorMsg
+          } catch {
+            errorMsg = upload.body || `Error del servidor (${upload.status})`
+          }
+          throw new Error(errorMsg)
+        }
       } else {
         const formData = new FormData()
         formData.append('start_date', startDate)

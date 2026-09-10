@@ -1,19 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../context/ToastContext'
 import api from '../api'
-
-const STATUS_LABELS = {
-  on_time: { label: 'En hora', class: 'bg-green-100 text-green-700' },
-  late: { label: 'Tarde', class: 'bg-red-100 text-red-700' },
-  warning: { label: 'Advertencia', class: 'bg-yellow-100 text-yellow-700' },
-}
-
-const TYPE_LABELS = {
-  check_in: 'Entrada',
-  break_start: 'Inicio descanso',
-  break_end: 'Fin descanso',
-  check_out: 'Salida',
-}
+import { STATUS_LABELS, TYPE_LABELS } from '../constants/attendance'
+import { downloadBlob } from '../utils/fileDownloader'
 
 const getDefaultDateRange = () => {
   const today = new Date()
@@ -96,24 +85,13 @@ export default function Logs() {
       if (filters.status) params.status = filters.status
 
       const res = await api.get('/dashboard/logs/export', { params, responseType: 'blob' })
-      const blob = new Blob([res.data], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-
       const disposition = res.headers['content-disposition']
       let filename = `Registros_Asistencia_${dFrom}_al_${dTo}.xlsx`
       if (disposition && disposition.includes('filename=')) {
         filename = disposition.split('filename=')[1].replace(/["']/g, '')
       }
 
-      link.setAttribute('download', filename)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      downloadBlob(res.data, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
       success('Registros exportados en Excel correctamente')
     } catch (error) {
       console.error("Error descargando archivo", error)

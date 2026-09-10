@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Award, Download, FileText, Calendar, CheckCircle2, XCircle, Users, Sparkles, Loader2 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
+import { downloadBlob } from '../utils/fileDownloader'
 
 export default function Bonuses() {
   const { success, error: showError, info } = useToast()
@@ -35,14 +36,7 @@ export default function Bonuses() {
         params: { month },
         responseType: 'blob'
       })
-      const blob = new Blob([response.data], { type: 'application/pdf' })
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.setAttribute('download', `reporte_oficial_bonos_${month}.pdf`)
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
+      downloadBlob(response.data, `reporte_oficial_bonos_${month}.pdf`, 'application/pdf')
       success('Reporte PDF oficial descargado exitosamente')
     } catch (e) {
       showError('Error al generar el documento PDF')

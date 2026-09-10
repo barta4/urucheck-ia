@@ -10,6 +10,7 @@ from auth import get_current_admin, get_current_user
 from database import database
 from config import settings
 from crypto import encrypt_secret, decrypt_secret, mask_secret
+from db_utils import build_dynamic_update_query
 
 router = APIRouter(prefix="/api/company", tags=["company"])
 
@@ -261,19 +262,13 @@ async def update_config(
         )
 
     updates["updated_at"] = "NOW()"
-    set_parts = []
-    params = {"cid": company_id}
-    for k, v in updates.items():
-        if v == "NOW()":
-            set_parts.append(f"{k} = NOW()")
-        else:
-            set_parts.append(f"{k} = :{k}")
-            params[k] = v
-
-    set_clause = ", ".join(set_parts)
-    await database.execute(
-        f"UPDATE company_config SET {set_clause} WHERE company_id = :cid", params
+    query, params = build_dynamic_update_query(
+        table_name="company_config",
+        update_fields=updates,
+        where_clause="company_id = :cid",
+        where_params={"cid": company_id},
     )
+    await database.execute(query, params)
     return {"message": "Configuración actualizada"}
 
 

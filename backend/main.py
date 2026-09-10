@@ -10,10 +10,11 @@ from jose import jwt
 import logging
 import os
 import traceback
+from datetime import datetime, timezone
 
 from database import database
 from config import settings
-from auth import get_current_user, get_password_hash
+from auth import get_password_hash
 from routers import (
     auth, attendance, employees, dashboard, company, chat,
     privacy, data_rights, companies, plans, subscriptions,

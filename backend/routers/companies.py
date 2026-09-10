@@ -9,6 +9,7 @@ from typing import Optional
 from pydantic import BaseModel, EmailStr
 from auth import get_password_hash, get_current_user, get_current_admin, get_current_super_admin, create_access_token
 from database import database
+from db_utils import build_dynamic_update_query
 from schemas import CompanyCreate, CompanyOut, CompanyStatusUpdate
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -208,18 +209,13 @@ async def update_company_status(
     elif status == "cancelled":
         updates["cancelled_at"] = "NOW()"
 
-    set_parts = []
-    params = {"cid": company_id}
-    for k, v in updates.items():
-        if v == "NOW()":
-            set_parts.append(f"{k} = NOW()")
-        else:
-            set_parts.append(f"{k} = :{k}")
-            params[k] = v
-
-    await database.execute(
-        f"UPDATE companies SET {', '.join(set_parts)} WHERE id = :cid", params
+    query, params = build_dynamic_update_query(
+        table_name="companies",
+        update_fields=updates,
+        where_clause="id = :cid",
+        where_params={"cid": company_id},
     )
+    await database.execute(query, params)
     return {"message": f"Estado actualizado a '{status}'"}
 
 

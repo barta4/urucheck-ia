@@ -21,6 +21,7 @@ import {
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import ConfirmModal from '../components/ConfirmModal'
+import { downloadBlob, downloadCsvFromData } from '../utils/fileDownloader'
 
 const DAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
 const FULL_DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
@@ -448,14 +449,7 @@ export default function Employees() {
   const downloadTemplate = () => {
     const header = "Nombre,Email,Password,Rol,Cedula,Telefono,Direccion\n"
     const example = "Juan Perez,juan@empresa.com,123456,employee,1.234.567-8,099123456,Av. 18 de Julio 1234\nMaria Gomez,maria@empresa.com,123456,admin,4.567.890-1,098765432,Bvar. Artigas 567"
-    const blob = new Blob([header + example], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.setAttribute('href', url)
-    link.setAttribute('download', 'plantilla_empleados.csv')
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    downloadBlob(header + example, 'plantilla_empleados.csv', 'text/csv;charset=utf-8;')
     info('Plantilla descargada')
   }
 
@@ -464,18 +458,17 @@ export default function Employees() {
       warning('No hay empleados para exportar')
       return
     }
-    const header = "Nombre,Email,Rol,Estado,Cedula,Telefono,Direccion\n"
-    const rows = employees.map(e =>
-      `"${e.name}","${e.email}","${e.role}","${e.active ? 'Activo' : 'Inactivo'}","${e.document_id || ''}","${e.phone || ''}","${e.address || ''}"`
-    ).join('\n')
-    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.setAttribute('href', url)
-    link.setAttribute('download', `empleados_${new Date().toISOString().slice(0, 10)}.csv`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    const headers = ['Nombre', 'Email', 'Rol', 'Estado', 'Cedula', 'Telefono', 'Direccion']
+    const rows = employees.map(e => [
+      e.name,
+      e.email,
+      e.role,
+      e.active ? 'Activo' : 'Inactivo',
+      e.document_id || '',
+      e.phone || '',
+      e.address || ''
+    ])
+    downloadCsvFromData(`empleados_${new Date().toISOString().slice(0, 10)}.csv`, headers, rows)
     success('Listado de empleados exportado en CSV')
   }
 

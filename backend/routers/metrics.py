@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from auth import get_current_super_admin
 from database import database
+from payment_service import create_mp_checkout_preference, apply_subscription_manual_payment
 
 router = APIRouter(prefix="/api/saas-metrics", tags=["saas-metrics"])
 
@@ -440,121 +441,20 @@ async def register_manual_payment(
     Super-admin registers a manual payment (e.g. wire transfer, cash).
     Activates the company and advances subscription period.
     """
-    company = await database.fetch_one(
-        "SELECT id, name, slug FROM companies WHERE id = :cid",
-        {"cid": payload.company_id}
-    )
-    if not company:
-        raise HTTPException(status_code=404, detail="Empresa no encontrada")
-
-    # Generate an invoice number
-    now = datetime.now()
-    inv_num = f"INV-{now.strftime('%Y%m')}-{payload.company_id[:4].upper()}-{int(now.timestamp()) % 10000}"
-
-    invoice_id = await database.execute(
-        """
-        INSERT INTO invoices (company_id, invoice_number, amount, currency, status, paid_at)
-        VALUES (:cid, :inv_num, :amount, :currency, 'paid', NOW())
-        RETURNING id
-        """,
-        {
-            "cid": payload.company_id,
-            "inv_num": inv_num,
-            "amount": payload.amount,
-            "currency": payload.currency,
-        }
-    )
-
-    # Record payment
-    payment_id = await database.execute(
-        """
-        INSERT INTO payments (company_id, invoice_id, amount, currency, method, mercado_pago_status, notes)
-        VALUES (:cid, :inv_id, :amount, :currency, :method, 'approved', :notes)
-        RETURNING id
-        """,
-        {
-            "cid": payload.company_id,
-            "inv_id": invoice_id,
-            "amount": payload.amount,
-            "currency": payload.currency,
-            "method": payload.method,
-            "notes": payload.notes,
-        }
-    )
-
-    # Extend or activate subscription
-    sub = await database.fetch_one(
-        "SELECT id, current_period_end FROM subscriptions WHERE company_id = :cid",
-        {"cid": payload.company_id}
-    )
-
-    if sub:
-        # If current period is still in the future, extend from that date; else from NOW()
-        curr_end = sub["current_period_end"]
-        if curr_end and curr_end.replace(tzinfo=None) > now:
-            new_end = curr_end.replace(tzinfo=None) + timedelta(days=payload.days_to_add)
-        else:
-            new_end = now + timedelta(days=payload.days_to_add)
-
-        await database.execute(
-            """
-            UPDATE subscriptions SET
-                status = 'active',
-                current_period_start = NOW(),
-                current_period_end = :nend,
-                updated_at = NOW()
-            WHERE company_id = :cid
-            """,
-            {"cid": payload.company_id, "nend": new_end}
+    try:
+        return await apply_subscription_manual_payment(
+            company_id=payload.company_id,
+            amount=payload.amount,
+            currency=payload.currency,
+            method=payload.method,
+            days_to_add=payload.days_to_add,
+            notes=payload.notes,
+            user_id=current_user["id"],
         )
-    else:
-        new_end = now + timedelta(days=payload.days_to_add)
-        await database.execute(
-            """
-            INSERT INTO subscriptions (company_id, status, current_period_start, current_period_end)
-            VALUES (:cid, 'active', NOW(), :nend)
-            """,
-            {"cid": payload.company_id, "nend": new_end}
-        )
-
-    # Update company status
-    await database.execute(
-        """
-        UPDATE companies SET
-            status = 'active',
-            last_payment_at = NOW(),
-            updated_at = NOW()
-        WHERE id = :cid
-        """,
-        {"cid": payload.company_id}
-    )
-
-    # Audit log
-    await database.execute(
-        """
-        INSERT INTO audit_logs (company_id, user_id, action, resource, resource_id, details)
-        VALUES (:cid, :uid, 'manual_payment_recorded', 'payment', :pid, :details)
-        """,
-        {
-            "cid": payload.company_id,
-            "uid": current_user["id"],
-            "pid": payment_id,
-            "details": json.dumps({
-                "amount": payload.amount,
-                "currency": payload.currency,
-                "method": payload.method,
-                "days_added": payload.days_to_add,
-                "notes": payload.notes,
-            })
-        }
-    )
-
-    return {
-        "message": f"Pago de ${payload.amount} {payload.currency} registrado con éxito para {company['name']}.",
-        "payment_id": str(payment_id),
-        "invoice_number": inv_num,
-        "new_period_end": new_end.isoformat()
-    }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error registrando pago manual: {str(e)}")
 
 
 class PaymentLinkRequest(BaseModel):
@@ -579,58 +479,16 @@ async def create_company_payment_link(
         raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
     try:
-        import httpx
-        from mp_oauth import get_mp_access_token
-        from config import settings
-
-        mp_token = await get_mp_access_token()
-
-        preference_data = {
-            "items": [{
-                "title": payload.description,
-                "quantity": 1,
-                "unit_price": payload.amount,
-                "currency_id": "USD",
-            }],
-            "payer": {
-                "name": company["name"],
-                "email": company["admin_email"],
-            },
-            "external_reference": str(company["id"]),
-            "metadata": {
-                "company_id": str(company["id"])
-            },
-            "back_urls": {
-                "success": f"{settings.FRONTEND_URL}/subscription/success",
-                "failure": f"{settings.FRONTEND_URL}/subscription/failure",
-                "pending": f"{settings.FRONTEND_URL}/subscription/pending",
-            },
-            "auto_return": "approved",
-            "notification_url": f"{settings.FRONTEND_URL.replace('http://', 'https://').rstrip('/')}/api/payments/webhook",
-        }
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.mercadopago.com/checkout/preferences",
-                headers={
-                    "Authorization": f"Bearer {mp_token}",
-                    "Content-Type": "application/json",
-                },
-                json=preference_data,
-                timeout=15.0
-            )
-
-        if response.status_code not in (200, 201):
-            raise HTTPException(status_code=500, detail=f"Error en MercadoPago: {response.text}")
-
-        res = response.json()
-        return {
-            "preference_id": res["id"],
-            "init_point": res["init_point"],
-            "sandbox_init_point": res.get("sandbox_init_point"),
-        }
-    except HTTPException:
-        raise
+        return await create_mp_checkout_preference(
+            company_id=str(company["id"]),
+            company_name=company["name"],
+            company_email=company["admin_email"],
+            amount=payload.amount,
+            description=payload.description or "Suscripción mensual UruCheck IA SaaS",
+            currency="USD",
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creando link de pago: {str(e)}")
 

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -61,7 +61,7 @@ async def request_employee_location(
         data={
             "type": "LOCATION_REQUEST",
             "employee_id": str(emp["id"]),
-            "requested_at": datetime.utcnow().isoformat(),
+            "requested_at": datetime.now(timezone.utc).isoformat(),
         },
     )
 
@@ -125,7 +125,7 @@ async def request_all_active_locations(
             data={
                 "type": "LOCATION_REQUEST",
                 "employee_id": str(emp["id"]),
-                "requested_at": datetime.utcnow().isoformat(),
+                "requested_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         if sent:
@@ -200,7 +200,7 @@ async def report_location(
     return {
         "status": "ok",
         "message": "Ubicación reportada exitosamente",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
