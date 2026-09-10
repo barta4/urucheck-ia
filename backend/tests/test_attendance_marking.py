@@ -129,3 +129,30 @@ async def test_check_geofence_all_locations_allowed():
     geofence_id = schedule.get("geofence_id")
     in_geofence = True if (schedule and geofence_id is None) else False
     assert in_geofence is True
+
+
+@pytest.mark.anyio
+async def test_get_today_logs_no_unbound_error():
+    """
+    Verify get_today_logs executes successfully and accesses settings.TIMEZONE
+    without UnboundLocalError.
+    """
+    from routers.attendance import get_today_logs
+
+    mock_user = {"id": "emp-1", "company_id": "comp-1"}
+
+    async def mock_fetch_all(query, params=None):
+        return []
+
+    async def mock_fetch_one(query, params=None):
+        return None
+
+    with patch("routers.attendance.database.fetch_all", side_effect=mock_fetch_all), \
+         patch("routers.attendance.database.fetch_one", side_effect=mock_fetch_one), \
+         patch("routers.attendance.get_next_mark_type", return_value="check_in"), \
+         patch("routers.attendance.get_employee_schedule", return_value=None):
+        res = await get_today_logs(current_user=mock_user)
+        assert res["logs"] == []
+        assert res["next_action"] == "check_in"
+        assert res["streak"] == 0
+

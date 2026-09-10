@@ -345,7 +345,6 @@ async def get_today_logs(current_user=Depends(get_current_user)):
         "SELECT current_streak FROM streaks WHERE employee_id = :eid AND company_id = :cid",
         {"eid": employee_id, "cid": company_id}
     )
-    from config import settings
     streak = streak_row["current_streak"] if streak_row else 0
     return {
         "logs": [dict(r) for r in logs],
