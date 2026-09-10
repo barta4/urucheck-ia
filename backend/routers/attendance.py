@@ -189,9 +189,17 @@ async def mark_attendance(
             )
         filename = f"{company_id}_{employee_id}_{uuid.uuid4().hex}.{ext}"
         photo_path = os.path.join(settings.PHOTOS_PATH, filename)
-        os.makedirs(settings.PHOTOS_PATH, exist_ok=True)
-        with open(photo_path, "wb") as f:
-            f.write(content)
+        try:
+            os.makedirs(settings.PHOTOS_PATH, exist_ok=True)
+            with open(photo_path, "wb") as f:
+                f.write(content)
+        except (PermissionError, OSError) as perm_err:
+            logger.warning("[attendance] Permiso denegado en %s: %s. Guardando en /tmp/photos", settings.PHOTOS_PATH, perm_err)
+            fallback_dir = "/tmp/photos"
+            os.makedirs(fallback_dir, exist_ok=True)
+            photo_path = os.path.join(fallback_dir, filename)
+            with open(photo_path, "wb") as f:
+                f.write(content)
 
     face_required, face_provider, face_error = await _check_face_verification_required(employee_id, company_id)
     face_verified = None

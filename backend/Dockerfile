@@ -33,11 +33,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 RUN mkdir -p /app/photos \
-    && addgroup --system --gid 1001 appuser \
-    && adduser --system --uid 1001 --ingroup appuser appuser \
-    && chown -R appuser:appuser /app
-
-USER appuser
+    && chmod -R 777 /app/photos
 
 EXPOSE 8000
 

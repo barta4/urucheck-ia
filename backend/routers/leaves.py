@@ -35,8 +35,15 @@ async def create_leave_request(
         if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
             raise HTTPException(status_code=413, detail="El certificado excede el tamaño máximo permitido (10 MB).")
 
-        with open(cert_path, "wb") as f:
-            f.write(content)
+        try:
+            with open(cert_path, "wb") as f:
+                f.write(content)
+        except (PermissionError, OSError):
+            fallback_dir = "/tmp/photos/certificates"
+            os.makedirs(fallback_dir, exist_ok=True)
+            cert_path = os.path.join(fallback_dir, filename)
+            with open(cert_path, "wb") as f:
+                f.write(content)
 
     query = """
         INSERT INTO leave_requests (company_id, employee_id, start_date, end_date, reason, certificate_path)
