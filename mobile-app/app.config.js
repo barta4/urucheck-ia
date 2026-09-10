@@ -29,12 +29,12 @@ export default {
       bundleIdentifier: "com.empresa.attendance",
       infoPlist: {
         NSCameraUsageDescription: "Necesitamos acceso a la cámara para tomar una foto de validación al registrar tu asistencia.",
-        NSLocationWhenInUseUsageDescription: "Necesitamos tu ubicación para confirmar que estás en el lugar de trabajo al registrar tu asistencia."
+        NSLocationWhenInUseUsageDescription: "Necesitamos tu ubicación para confirmar que estás en el lugar de trabajo al registrar asistencia o a solicitud de la administración durante tu jornada laboral."
       }
     },
     plugins: [
       ["expo-camera", { cameraPermission: "Permitir acceso a la cámara para la verificación de asistencia." }],
-      ["expo-location", { locationWhenInUsePermission: "Permitir acceso a la ubicación para confirmar tu lugar de trabajo." }]
+      ["expo-location", { locationWhenInUsePermission: "Permitir acceso a la ubicación para confirmar tu lugar de trabajo o a solicitud de la administración durante tu jornada." }]
     ],
     extra: {
       API_URL: process.env.EXPO_PUBLIC_API_URL || "https://asistencia.urufile.com/api",

@@ -16,7 +16,7 @@ from auth import get_current_user, get_password_hash
 from routers import (
     auth, attendance, employees, dashboard, company, chat,
     privacy, data_rights, companies, plans, subscriptions,
-    payments, audit, metrics, password_reset, notifications, leaves,
+    payments, audit, metrics, password_reset, notifications, leaves, locations,
 )
 
 # ─── Logging ─────────────────────────────────────────────────
@@ -309,7 +309,8 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_host VARCHAR(150);",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_port INT DEFAULT 587;",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_username VARCHAR(100);",
-        "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_password VARCHAR(100);",
+        "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_password VARCHAR(255);",
+        "ALTER TABLE company_config ALTER COLUMN smtp_password TYPE VARCHAR(255);",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_from_email VARCHAR(100);",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS smtp_to_email VARCHAR(100);",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS email_notify_monthly_report BOOLEAN DEFAULT false;",
@@ -323,6 +324,20 @@ async def lifespan(app: FastAPI):
         "INSERT INTO saas_settings (id, value) VALUES ('mp_client_secret', '') ON CONFLICT (id) DO NOTHING;",
         "INSERT INTO saas_settings (id, value) VALUES ('mp_access_token', '') ON CONFLICT (id) DO NOTHING;",
         "INSERT INTO saas_settings (id, value) VALUES ('mp_public_key', '') ON CONFLICT (id) DO NOTHING;",
+        "INSERT INTO saas_settings (id, value) VALUES ('mp_webhook_secret', '') ON CONFLICT (id) DO NOTHING;",
+        # Live tracking & on-demand location columns
+        "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS live_tracking_enabled BOOLEAN DEFAULT false;",
+        "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS live_tracking_interval_minutes INT DEFAULT 15;",
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_latitude DECIMAL(10,8);",
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_longitude DECIMAL(11,8);",
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_location_accuracy FLOAT;",
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMP;",
+        "ALTER TABLE employees ADD COLUMN IF NOT EXISTS last_location_source VARCHAR(30);",
+        "CREATE TABLE IF NOT EXISTS employee_location_reports (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), company_id UUID REFERENCES companies(id) ON DELETE CASCADE, employee_id UUID REFERENCES employees(id) ON DELETE CASCADE, latitude DECIMAL(10,8) NOT NULL, longitude DECIMAL(11,8) NOT NULL, accuracy FLOAT, battery_level FLOAT, source VARCHAR(30) DEFAULT 'on_demand', created_at TIMESTAMP DEFAULT NOW());",
+        "CREATE INDEX IF NOT EXISTS idx_emp_loc_rep_comp ON employee_location_reports(company_id, created_at DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_emp_loc_rep_emp ON employee_location_reports(employee_id, created_at DESC);",
+        "CREATE TABLE IF NOT EXISTS revoked_tokens (jti VARCHAR(64) PRIMARY KEY, expires_at TIMESTAMP WITH TIME ZONE);",
+        "CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(expires_at);",
         # NOTE: super_admin flag is set via parameterized query below (not in this list).
         # ─── Performance indexes (idempotent) ───
         "CREATE INDEX IF NOT EXISTS idx_al_cid_eid ON attendance_logs(company_id, employee_id);",
@@ -416,6 +431,7 @@ app.include_router(metrics.router)
 app.include_router(password_reset.router)
 app.include_router(notifications.router)
 app.include_router(leaves.router)
+app.include_router(locations.router)
 
 # Serve photos — protected against path traversal
 @app.get("/api/photos/{filename}")
@@ -472,5 +488,18 @@ async def get_photo(filename: str, request: Request, token: str = None) -> FileR
 
 @app.get("/api/health")
 async def health() -> dict:
-    """Public health-check endpoint."""
-    return {"status": "ok", "service": "attendance-api", "version": "3.0.0"}
+    """Public health-check endpoint with database probe."""
+    db_status = "ok"
+    try:
+        await database.fetch_one("SELECT 1")
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+
+    overall = "ok" if db_status == "ok" else "degraded"
+    return {
+        "status": overall,
+        "database": db_status,
+        "service": "attendance-api",
+        "version": "3.0.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }

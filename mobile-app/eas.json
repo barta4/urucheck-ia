@@ -11,9 +11,16 @@
       "android": {
         "buildType": "apk"
       },
-      "channel": "preview"
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://asistencia.urufile.com/api"
+      }
     },
-    "production": {}
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://asistencia.urufile.com/api"
+      }
+    }
   },
   "submit": {
     "production": {}

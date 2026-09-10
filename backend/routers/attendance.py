@@ -161,10 +161,15 @@ async def mark_attendance(
         ext = photo.filename.split(".")[-1].lower() if photo.filename else "jpg"
         if ext not in ("png", "jpg", "jpeg", "webp"):
             raise HTTPException(status_code=400, detail="Formato de imagen no permitido. Use PNG, JPG o WebP.")
+        content = await photo.read()
+        if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
+            raise HTTPException(
+                status_code=413,
+                detail="La imagen excede el tamaño máximo permitido (10 MB)."
+            )
         filename = f"{company_id}_{employee_id}_{uuid.uuid4().hex}.{ext}"
         photo_path = os.path.join(settings.PHOTOS_PATH, filename)
         os.makedirs(settings.PHOTOS_PATH, exist_ok=True)
-        content = await photo.read()
         with open(photo_path, "wb") as f:
             f.write(content)
 

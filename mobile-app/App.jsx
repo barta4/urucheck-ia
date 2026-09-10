@@ -4,6 +4,7 @@ import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { AuthProvider, useAuth } from './src/context/AuthContext'
+import { setupNotificationListeners } from './src/services/notifications'
 import OnboardingScreen from './src/screens/OnboardingScreen'
 import LoginScreen from './src/screens/LoginScreen'
 import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen'
@@ -38,6 +39,23 @@ function AppNavigator() {
     BackHandler.addEventListener('hardwareBackPress', handler)
     return () => BackHandler.removeEventListener('hardwareBackPress', handler)
   }, [])
+
+  // Listen for admin location requests
+  useEffect(() => {
+    if (!user) return
+    const cleanup = setupNotificationListeners((result) => {
+      if (result?.success) {
+        Alert.alert(
+          '📍 Ubicación Confirmada',
+          'Tu ubicación actual ha sido compartida con la administración de la empresa.',
+          [{ text: 'Entendido' }]
+        )
+      }
+    })
+    return () => {
+      if (cleanup) cleanup()
+    }
+  }, [user])
 
   if (loading || termsAccepted === null || !navReady) {
     return (

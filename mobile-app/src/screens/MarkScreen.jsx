@@ -13,6 +13,7 @@ import { useCompany } from '../hooks/useCompany'
 import FeedbackOverlay from '../components/FeedbackOverlay'
 import api from '../api'
 import { addToQueue, getQueueCount, syncQueue, deleteQueuedPhoto } from '../offlineQueue'
+import { reportLocationToServer } from '../services/locationService'
 
 const ACTION_CONFIG = {
   check_in: {
@@ -45,6 +46,19 @@ const ACTION_CONFIG = {
     color: '#6b7280',
     bg: '#f9fafb',
   },
+}
+
+const TYPE_LABELS = {
+  check_in: 'Entrada',
+  break_start: 'Inicio descanso',
+  break_end: 'Fin descanso',
+  check_out: 'Salida',
+}
+
+const STATUS_LABELS = {
+  on_time: { label: 'En hora' },
+  late: { label: 'Tarde' },
+  warning: { label: 'Advertencia' },
 }
 
 export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavigateOfflineQueue, tokenExpired }) {
@@ -103,6 +117,29 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
       clearInterval(interval)
     }
   }, [])
+
+  // Periodic location tracking during active shift (if enabled by company)
+  useEffect(() => {
+    const isShiftActive = todayData?.next_action &&
+      todayData.next_action !== 'check_in' &&
+      todayData.next_action !== 'already_completed'
+
+    if (!company?.live_tracking_enabled || !isShiftActive) {
+      return
+    }
+
+    const intervalMins = Math.max(5, company?.live_tracking_interval_minutes || 15)
+    const intervalMs = intervalMins * 60 * 1000
+
+    // Initial ping on shift start
+    reportLocationToServer('shift_tracking').catch(() => {})
+
+    const timer = setInterval(() => {
+      reportLocationToServer('shift_tracking').catch(() => {})
+    }, intervalMs)
+
+    return () => clearInterval(timer)
+  }, [company?.live_tracking_enabled, company?.live_tracking_interval_minutes, todayData?.next_action])
 
   const handleAutoSync = async () => {
     const count = await getQueueCount()
@@ -344,13 +381,6 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
   const actionCfg = ACTION_CONFIG[nextAction] || ACTION_CONFIG.check_in
   const isCompleted = nextAction === 'already_completed'
 
-  const TYPE_LABELS = {
-    check_in: 'Entrada',
-    break_start: 'Inicio descanso',
-    break_end: 'Fin descanso',
-    check_out: 'Salida',
-  }
-
   return (
     <SafeAreaView style={styles.safe}>
       {/* Offline banner */}
@@ -437,6 +467,16 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
               <Text style={styles.streakNum}>{todayData.streak} días seguidos</Text>
               <Text style={styles.streakSub}>Faltan {todayData.days_to_bonus} días para el bono</Text>
             </View>
+          </View>
+        )}
+
+        {/* Live shift tracking status indicator */}
+        {company?.live_tracking_enabled && todayData?.next_action && todayData.next_action !== 'check_in' && todayData.next_action !== 'already_completed' && (
+          <View style={styles.trackingPill}>
+            <Text style={styles.trackingPillIcon}>📡</Text>
+            <Text style={styles.trackingPillText}>
+              Reporte de ubicación activo durante tu turno (cada {company.live_tracking_interval_minutes || 15}m)
+            </Text>
           </View>
         )}
 
@@ -671,4 +711,18 @@ const styles = StyleSheet.create({
   statusGreen: { backgroundColor: '#f0fdf4', color: '#16a34a' },
   statusRed: { backgroundColor: '#fef2f2', color: '#dc2626' },
   statusYellow: { backgroundColor: '#fefce8', color: '#ca8a04' },
+  trackingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+    gap: 8,
+  },
+  trackingPillIcon: { fontSize: 16 },
+  trackingPillText: { fontSize: 12, color: '#1e40af', fontWeight: '500', flex: 1 },
 })

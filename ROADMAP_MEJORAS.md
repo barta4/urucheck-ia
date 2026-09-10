@@ -10,6 +10,7 @@
 3. [Backend & Arquitectura de Datos](#3-backend--arquitectura-de-datos)
 4. [Infraestructura y Despliegue en Dokploy (Traefik)](#4-infraestructura-y-despliegue-en-dokploy-traefik)
 5. [Modelo SaaS & Crecimiento](#5-modelo-saas--crecimiento)
+6. [Seguridad y Hardening Multi-Tenant (Security Audit)](#6-seguridad-y-hardening-multi-tenant-security-audit)
 
 ---
 
@@ -166,3 +167,38 @@ services:
 * **Mejora planificada:**
   * Configurar `i18next` en el frontend y `react-i18next` en la app móvil.
   * Diccionarios de traducción en Español (predeterminado), Inglés y Portugués para facilitar la expansión a toda Latinoamérica.
+
+---
+
+## 6. Seguridad y Hardening Multi-Tenant (Security Audit)
+
+> **Resultado del Security Audit (8 pilares)**: Implementación de defensas en profundidad, blindaje de pagos y aislamiento multi-tenant.
+
+### 6.1. Validación Criptográfica de Webhooks de Mercado Pago (HMAC-SHA256)
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Validación estricta de las cabeceras `x-signature` y `x-request-id` con el secreto `mp_webhook_secret` y ventana de tolerancia temporal (`ts` <= 600s) para mitigar ataques de repetición (replay attacks) y falsificación de pagos.
+
+### 6.2. Cifrado Simétrico en Reposo para Credenciales (Fernet)
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Las contraseñas de servidores SMTP y secretos de terceros en `company_config` se cifran usando Fernet derivado de `ENCRYPTION_KEY` / `SECRET_KEY`, evitando que accesos o volcados de base de datos expongan credenciales en texto plano. En las respuestas de la API, las contraseñas se enmascaran (`********`).
+
+### 6.3. Identificador Único de Tokens JWT (`jti`) y Revocación de Sesiones
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Emisión de `jti` en cada token de acceso y persistencia en tabla `revoked_tokens` al invocar `POST /api/auth/logout`, permitiendo la invalidación explícita de credenciales comprometidas.
+
+### 6.4. Contenedor Backend Non-Root (`appuser`)
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Dockerfile configurado con usuario y grupo del sistema sin privilegios (`appuser:appuser`, UID 1001), eliminando riesgos de escalación de privilegios al host si ocurre una vulnerabilidad de aplicación.
+
+### 6.5. Límites DoS en Subida de Archivos y Fotos
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Validación de tamaño máximo de 10 MB antes de persistir fotos de asistencia, certificados médicos y fotos de enrolamiento facial, respondiendo con `HTTP 413 Payload Too Large` ante archivos excesivos.
+
+### 6.6. Políticas de Complejidad de Contraseñas y Erradicación de Defaults
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Reglas obligatorias de al menos 8 caracteres, números y mayúsculas en registro de empresa y empleados. Erradicación de contraseñas por defecto (`123456`) en la creación masiva, reemplazadas por claves aleatorias seguras autogeneradas.
+
+### 6.7. Health Probes y Observabilidad
+* **Estado:** ✅ **Implementado**
+* **Detalle:** Endpoint `/api/health` instrumentado con verificación activa de conectividad a PostgreSQL para que Traefik y Dokploy reconozcan el estado real del clúster antes de enrutar tráfico.
+

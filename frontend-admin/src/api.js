@@ -19,10 +19,23 @@ api.interceptors.response.use(
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
+      sessionStorage.removeItem('token')
       window.location.href = '/login'
     }
     return Promise.reject(err)
   }
 )
+
+export const logout = async () => {
+  try {
+    await api.post('/auth/logout')
+  } catch (_) {
+    // Graceful fallback if network fails
+  } finally {
+    localStorage.removeItem('token')
+    sessionStorage.removeItem('token')
+    window.location.href = '/login'
+  }
+}
 
 export default api

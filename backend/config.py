@@ -46,6 +46,10 @@ class Settings(BaseSettings):
 
     # --- MercadoPago ---
     MERCADOPAGO_ACCESS_TOKEN: str = ""
+    MERCADOPAGO_WEBHOOK_SECRET: str = ""
+
+    # --- Encryption at Rest (Fernet key) ---
+    ENCRYPTION_KEY: str = ""
 
     class Config:
         env_file = ".env"

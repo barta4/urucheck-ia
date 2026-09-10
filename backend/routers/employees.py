@@ -9,6 +9,7 @@ from config import settings
 from schedule_validator import find_schedule_conflict
 import uuid
 import os
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,9 @@ async def bulk_create_employees(data: EmployeeBulkCreate, current_user=Depends(g
                 continue
             
             seen_batch_emails.add(clean_email)
-            hashed = get_password_hash(item.password or "123456")
+            # Generate random secure temporary password if none provided (H13)
+            auto_pwd = item.password or f"UruCheck{secrets.token_hex(4)}!"
+            hashed = get_password_hash(auto_pwd)
             await database.execute(
                 """
                 INSERT INTO employees (company_id, name, email, password_hash, role, document_id, address, phone)
@@ -319,12 +322,15 @@ async def enroll_face(
     if ext not in ("png", "jpg", "jpeg", "webp"):
         raise HTTPException(status_code=400, detail="Formato no permitido. Use PNG, JPG o WebP")
 
+    content = await photo.read()
+    if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
+        raise HTTPException(status_code=413, detail="La imagen excede el tamaño máximo permitido (10 MB)")
+
     face_dir = os.path.join(settings.PHOTOS_PATH, "face_references")
     os.makedirs(face_dir, exist_ok=True)
     filename = f"face_{company_id}_{employee_id}_{uuid.uuid4().hex}.{ext}"
     face_path = os.path.join(face_dir, filename)
 
-    content = await photo.read()
     with open(face_path, "wb") as f:
         f.write(content)
 

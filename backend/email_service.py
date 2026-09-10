@@ -2,6 +2,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import logging
+from crypto import decrypt_secret
 
 logger = logging.getLogger("email_service")
 
@@ -12,7 +13,8 @@ def send_smtp_email(config: dict, subject: str, html_content: str, text_content:
     smtp_host = config.get("smtp_host")
     smtp_port = config.get("smtp_port") or 587
     smtp_username = config.get("smtp_username")
-    smtp_password = config.get("smtp_password")
+    raw_password = config.get("smtp_password")
+    smtp_password = decrypt_secret(raw_password) if raw_password else None
     smtp_from_email = config.get("smtp_from_email")
     smtp_to_email = config.get("smtp_to_email")
 

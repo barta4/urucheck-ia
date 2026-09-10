@@ -95,11 +95,14 @@ async def today_status(admin=Depends(get_current_admin)):
         """
         SELECT
             e.id, e.name, e.email,
+            e.last_latitude, e.last_longitude, e.last_location_accuracy,
+            e.last_location_at, e.last_location_source,
+            (e.expo_push_token IS NOT NULL AND e.expo_push_token LIKE 'ExponentPushToken%') AS has_device,
             s.start_time, s.tolerance_minutes,
             ci.timestamp  AS check_in_time,
             ci.status     AS check_in_status,
-            ci.latitude   AS latitude,
-            ci.longitude  AS longitude,
+            ci.latitude   AS check_in_latitude,
+            ci.longitude  AS check_in_longitude,
             st.current_streak AS current_streak,
             (
                 SELECT type FROM attendance_logs al2
@@ -133,16 +136,47 @@ async def today_status(admin=Depends(get_current_admin)):
             status = "absent" if (s_time and now > s_time) else "pending"
             current_action = None
 
+        # Prioritise the latest reported live location if from today
+        is_live_today = False
+        if emp["last_location_at"]:
+            try:
+                is_live_today = emp["last_location_at"].date() == today
+            except Exception:
+                is_live_today = False
+
+        if is_live_today and emp["last_latitude"] is not None and emp["last_longitude"] is not None:
+            lat = emp["last_latitude"]
+            lng = emp["last_longitude"]
+            loc_updated = emp["last_location_at"]
+            loc_source = emp["last_location_source"] or "on_demand"
+            loc_acc = emp["last_location_accuracy"]
+        elif emp["check_in_latitude"] is not None and emp["check_in_longitude"] is not None:
+            lat = emp["check_in_latitude"]
+            lng = emp["check_in_longitude"]
+            loc_updated = emp["check_in_time"]
+            loc_source = "check_in"
+            loc_acc = None
+        else:
+            lat = None
+            lng = None
+            loc_updated = None
+            loc_source = None
+            loc_acc = None
+
         s_time_clean = ensure_time(emp["start_time"])
         result.append({
             "employee_id": str(emp["id"]),
             "name": emp["name"],
             "email": emp["email"],
+            "has_device": bool(emp["has_device"]),
             "scheduled_start": str(s_time_clean) if s_time_clean else str(emp["start_time"]),
             "status": status,
             "check_in_time": str(emp["check_in_time"]) if emp["check_in_time"] else None,
-            "latitude": emp["latitude"],
-            "longitude": emp["longitude"],
+            "latitude": float(lat) if lat is not None else None,
+            "longitude": float(lng) if lng is not None else None,
+            "location_updated_at": str(loc_updated) if loc_updated else None,
+            "location_source": loc_source,
+            "location_accuracy": loc_acc,
             "current_action": current_action,
             "streak": emp["current_streak"] or 0,
         })

@@ -78,6 +78,8 @@ CREATE TABLE company_config (
     webhook_notify_break BOOLEAN DEFAULT false,
     webhook_notify_late BOOLEAN DEFAULT false,
     webhook_notify_absence BOOLEAN DEFAULT false,
+    live_tracking_enabled BOOLEAN DEFAULT false,
+    live_tracking_interval_minutes INT DEFAULT 15,
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -93,6 +95,11 @@ CREATE TABLE employees (
     role VARCHAR(20) DEFAULT 'employee',
     active BOOLEAN DEFAULT true,
     face_reference_path VARCHAR(255),
+    last_latitude DECIMAL(10,8),
+    last_longitude DECIMAL(11,8),
+    last_location_accuracy FLOAT,
+    last_location_at TIMESTAMP,
+    last_location_source VARCHAR(30),
     created_at TIMESTAMP DEFAULT NOW(),
     UNIQUE(company_id, email)
 );
@@ -152,6 +159,22 @@ CREATE INDEX idx_attendance_company ON attendance_logs(company_id);
 CREATE INDEX idx_attendance_employee_id ON attendance_logs(employee_id);
 CREATE INDEX idx_attendance_timestamp ON attendance_logs(timestamp);
 CREATE INDEX idx_attendance_type ON attendance_logs(type);
+
+-- ─── Employee Location Reports (Telemetry & On-demand) ─────
+CREATE TABLE employee_location_reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
+    employee_id UUID REFERENCES employees(id) ON DELETE CASCADE,
+    latitude DECIMAL(10,8) NOT NULL,
+    longitude DECIMAL(11,8) NOT NULL,
+    accuracy FLOAT,
+    battery_level FLOAT,
+    source VARCHAR(30) DEFAULT 'on_demand',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_emp_loc_reports_cid ON employee_location_reports(company_id, created_at DESC);
+CREATE INDEX idx_emp_loc_reports_eid ON employee_location_reports(employee_id, created_at DESC);
 
 -- ─── Streaks ────────────────────────────────────────────────
 CREATE TABLE streaks (

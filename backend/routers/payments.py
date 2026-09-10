@@ -4,6 +4,10 @@ Payments and MercadoPago integration.
 import os
 import httpx
 import json
+import hmac
+import hashlib
+import time
+import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Optional
@@ -11,6 +15,8 @@ from auth import get_current_admin
 from database import database
 from config import settings
 from mp_oauth import get_mp_access_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -73,27 +79,112 @@ async def create_payment_preference(
     }
 
 
+def verify_mp_signature(
+    x_signature: Optional[str],
+    x_request_id: Optional[str],
+    data_id: Optional[str],
+    secret: str,
+    max_age_seconds: int = 600,
+) -> bool:
+    """
+    Verify MercadoPago webhook HMAC signature.
+    x_signature format: 'ts=1701234567,v1=hash...'
+    """
+    if not x_signature or not x_request_id or not secret:
+        return False
+
+    parts = {}
+    for part in x_signature.split(","):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            parts[k] = v
+
+    ts = parts.get("ts")
+    v1 = parts.get("v1")
+    if not ts or not v1:
+        return False
+
+    # Check replay window (allow +/- max_age_seconds)
+    try:
+        ts_int = int(ts)
+        current_ts = int(time.time())
+        if abs(current_ts - ts_int) > max_age_seconds:
+            logger.warning(f"[MP Webhook] Replay or expired timestamp: ts={ts_int}, now={current_ts}")
+            return False
+    except ValueError:
+        return False
+
+    # Template format defined by MercadoPago: "id:[data.id];request-id:[x-request-id];ts:[ts];"
+    data_id_str = str(data_id or "")
+    manifest = f"id:{data_id_str};request-id:{x_request_id};ts:{ts};"
+    expected_hash = hmac.new(
+        secret.encode("utf-8"),
+        manifest.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(expected_hash, v1)
+
+
 @router.post("/webhook")
 async def mp_webhook(request: Request):
     """
     MercadoPago webhook endpoint.
-    Receives payment notifications and processes them.
+    Receives payment notifications and processes them with HMAC signature verification.
     """
+    # 1. Retrieve webhook secret from settings or DB
+    mp_secret = settings.MERCADOPAGO_WEBHOOK_SECRET
+    if not mp_secret:
+        row = await database.fetch_one(
+            "SELECT value FROM saas_settings WHERE id = 'mp_webhook_secret'"
+        )
+        if row and row["value"]:
+            mp_secret = row["value"]
+
+    x_signature = request.headers.get("x-signature")
+    x_request_id = request.headers.get("x-request-id")
+
     try:
         data = await request.json()
-        topic = data.get("topic")
-        resource = data.get("data", {}).get("id")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Cuerpo de petición JSON inválido")
 
+    # data.id can arrive in query parameters or json payload
+    data_id = (
+        request.query_params.get("data.id")
+        or (data.get("data", {}) or {}).get("id")
+        or data.get("id")
+    )
+
+    if mp_secret:
+        if not x_signature or not x_request_id:
+            logger.warning("[MP Webhook] Rechazado: faltan cabeceras x-signature o x-request-id")
+            raise HTTPException(status_code=403, detail="Firma de webhook requerida")
+
+        if not verify_mp_signature(x_signature, x_request_id, data_id, mp_secret):
+            logger.warning("[MP Webhook] Rechazado: firma HMAC inválida")
+            raise HTTPException(status_code=403, detail="Firma de webhook inválida")
+    else:
+        if not settings.DEBUG:
+            logger.error("[MP Webhook] CRÍTICO: MERCADOPAGO_WEBHOOK_SECRET no configurado en producción")
+            raise HTTPException(status_code=500, detail="Webhook no configurado de forma segura")
+        else:
+            logger.warning("[MP Webhook] ADVERTENCIA: Procesando webhook sin firma en modo DEBUG")
+
+    topic = data.get("topic") or data.get("type")
+    resource = data_id
+
+    try:
         if topic == "payment":
-            await _process_payment_notification(resource)
+            await _process_payment_notification(str(resource))
         elif topic == "merchant_order":
             pass  # Handle if needed
         elif topic == "preapproval":
-            await _process_preapproval_notification(resource)
+            await _process_preapproval_notification(str(resource))
 
         return {"status": "ok"}
     except Exception as e:
-        print(f"[MP Webhook] Error: {e}")
+        logger.error(f"[MP Webhook] Error: {e}")
         return {"status": "error", "message": str(e)}
 
 

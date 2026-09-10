@@ -3,6 +3,8 @@ import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
+import { reportLocationToServer } from './locationService';
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -55,3 +57,39 @@ export async function registerForPushNotificationsAsync() {
 
   return token;
 }
+
+/**
+ * Registra los listeners de notificaciones para responder a solicitudes de ubicación
+ * emitidas desde el panel de administración.
+ */
+export function setupNotificationListeners(onLocationRequested) {
+  // 1. App en primer plano
+  const receivedSubscription = Notifications.addNotificationReceivedListener(async (notification) => {
+    const data = notification?.request?.content?.data;
+    if (data && data.type === 'LOCATION_REQUEST') {
+      console.log('[notifications] Solicitud de ubicación recibida en primer plano, reportando...');
+      const result = await reportLocationToServer('on_demand');
+      if (onLocationRequested) {
+        onLocationRequested(result);
+      }
+    }
+  });
+
+  // 2. Usuario interactúa/toca la notificación (en segundo plano o cerrada)
+  const responseSubscription = Notifications.addNotificationResponseReceivedListener(async (response) => {
+    const data = response?.notification?.request?.content?.data;
+    if (data && data.type === 'LOCATION_REQUEST') {
+      console.log('[notifications] Solicitud de ubicación pulsada por el usuario, reportando...');
+      const result = await reportLocationToServer('on_demand');
+      if (onLocationRequested) {
+        onLocationRequested(result);
+      }
+    }
+  });
+
+  return () => {
+    receivedSubscription.remove();
+    responseSubscription.remove();
+  };
+}
+

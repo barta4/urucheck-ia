@@ -1,8 +1,26 @@
-from pydantic import BaseModel, EmailStr
+import re
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime, date, time
 from uuid import UUID
 from decimal import Decimal
+
+
+def validate_password_complexity(password: str) -> str:
+    """
+    Validates that a password satisfies minimum security complexity:
+    - At least 8 characters
+    - At least 1 numeric digit
+    - At least 1 uppercase letter
+    """
+    if not password or len(password) < 8:
+        raise ValueError("La contraseña debe tener al menos 8 caracteres.")
+    if not re.search(r"\d", password):
+        raise ValueError("La contraseña debe incluir al menos un número.")
+    if not re.search(r"[A-Z]", password):
+        raise ValueError("La contraseña debe incluir al menos una letra mayúscula.")
+    return password
+
 
 # ─── Auth ─────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
@@ -32,6 +50,11 @@ class CompanyCreate(BaseModel):
     plan_slug: str = "free"
     billing_name: Optional[str] = None
     rfc: Optional[str] = None
+
+    @field_validator("admin_password")
+    @classmethod
+    def validate_admin_pwd(cls, v: str) -> str:
+        return validate_password_complexity(v)
 
 class CompanyOut(BaseModel):
     id: UUID
@@ -147,14 +170,26 @@ class EmployeeCreate(BaseModel):
     address: Optional[str] = None
     phone: Optional[str] = None
 
+    @field_validator("password")
+    @classmethod
+    def validate_employee_pwd(cls, v: str) -> str:
+        return validate_password_complexity(v)
+
 class EmployeeBulkItem(BaseModel):
     name: str
     email: EmailStr
-    password: str = "123456"
+    password: Optional[str] = None
     role: str = "employee"
     document_id: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_bulk_pwd(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            return validate_password_complexity(v)
+        return None
 
 class EmployeeBulkCreate(BaseModel):
     employees: List[EmployeeBulkItem]
@@ -167,6 +202,13 @@ class EmployeeUpdate(BaseModel):
     document_id: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_update_pwd(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            return validate_password_complexity(v)
+        return None
 
 class EmployeeOut(BaseModel):
     id: UUID

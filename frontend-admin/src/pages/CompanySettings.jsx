@@ -35,6 +35,8 @@ export default function CompanySettings() {
     smtp_from_email: company.smtp_from_email || '',
     smtp_to_email: company.smtp_to_email || '',
     email_notify_monthly_report: company.email_notify_monthly_report || false,
+    live_tracking_enabled: company.live_tracking_enabled || false,
+    live_tracking_interval_minutes: company.live_tracking_interval_minutes || 15,
   })
 
   useEffect(() => {
@@ -60,6 +62,8 @@ export default function CompanySettings() {
         smtp_from_email: company.smtp_from_email || '',
         smtp_to_email: company.smtp_to_email || '',
         email_notify_monthly_report: Boolean(company.email_notify_monthly_report),
+        live_tracking_enabled: Boolean(company.live_tracking_enabled),
+        live_tracking_interval_minutes: company.live_tracking_interval_minutes || 15,
       })
     }
   }, [company])
@@ -107,6 +111,8 @@ export default function CompanySettings() {
       fd.append('smtp_from_email', form.smtp_from_email)
       fd.append('smtp_to_email', form.smtp_to_email)
       fd.append('email_notify_monthly_report', String(form.email_notify_monthly_report))
+      fd.append('live_tracking_enabled', String(form.live_tracking_enabled))
+      fd.append('live_tracking_interval_minutes', String(form.live_tracking_interval_minutes))
       if (logoFile) fd.append('logo', logoFile)
 
       await api.patch('/company/config', fd, {
@@ -589,6 +595,66 @@ export default function CompanySettings() {
                 Registrar Entrada
               </button>
               <p className="text-xs text-gray-400 mt-2">Así se verá el botón en la app</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Live GPS Tracking Settings (Hybrid Mode) */}
+        <div className="bg-white rounded-xl shadow-sm p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+              📍 Geolocalización en Tiempo Real
+            </h3>
+            <span className="px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              App Móvil
+            </span>
+          </div>
+          <p className="text-sm text-gray-500">
+            Controla cómo reportan ubicación los empleados durante su jornada de trabajo.
+          </p>
+
+          <div
+            onClick={() => handleToggle('live_tracking_enabled')}
+            className={`flex items-center gap-3 p-4 rounded-lg border cursor-pointer transition select-none
+              ${form.live_tracking_enabled
+                ? 'bg-blue-50 border-blue-300 text-blue-800'
+                : 'bg-gray-50 border-gray-200 text-gray-600'
+              }`}
+          >
+            <div className={`relative flex-shrink-0 w-10 h-5 rounded-full transition-colors ${form.live_tracking_enabled ? 'bg-blue-500' : 'bg-gray-300'}`}>
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.live_tracking_enabled ? 'translate-x-5' : 'translate-x-0'}`} />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium">Habilitar reporte de ubicación periódico durante la jornada laboral</p>
+              <p className="text-xs text-gray-500">
+                Cuando está activo, la app móvil reportará coordenadas automáticamente sólo mientras el empleado tenga la jornada iniciada (entre entrada y salida).
+              </p>
+            </div>
+          </div>
+
+          {form.live_tracking_enabled && (
+            <div className="pl-4 border-l-2 border-blue-200 space-y-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Intervalo de reporte automático (minutos)
+              </label>
+              <input
+                type="number"
+                min={5}
+                max={120}
+                value={form.live_tracking_interval_minutes}
+                onChange={e => setForm({ ...form, live_tracking_interval_minutes: parseInt(e.target.value) || 15 })}
+                className="w-36 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-400">
+                Recomendado: 15 minutos (mínimo 5 min, máximo 120 min).
+              </p>
+            </div>
+          )}
+
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-start gap-2">
+            <span className="text-sm">ℹ️</span>
+            <div>
+              <strong>Solicitud Bajo Demanda:</strong> Aunque este interruptor esté desactivado, los administradores siempre pueden solicitar la ubicación puntual en vivo desde el Dashboard pulsando <strong>"📍 Solicitar Ubicación"</strong>.
             </div>
           </div>
         </div>

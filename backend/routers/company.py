@@ -9,8 +9,22 @@ from typing import Optional
 from auth import get_current_admin, get_current_user
 from database import database
 from config import settings
+from crypto import encrypt_secret, decrypt_secret, mask_secret
 
 router = APIRouter(prefix="/api/company", tags=["company"])
+
+# Whitelist of fields permitted to be updated via update_config (H11)
+_ALLOWED_CONFIG_UPDATE_FIELDS = frozenset({
+    "company_name", "timezone", "tolerance_minutes", "auto_checkout_hours",
+    "require_gps", "require_face", "face_verification_enabled",
+    "face_verification_provider", "primary_color", "accent_color",
+    "webhook_url", "bonus_success_message", "bonus_pending_message",
+    "webhook_notify_checkin", "webhook_notify_checkout",
+    "webhook_notify_break", "webhook_notify_late", "smtp_host",
+    "smtp_port", "smtp_username", "smtp_password", "smtp_from_email",
+    "smtp_to_email", "email_notify_monthly_report", "live_tracking_enabled",
+    "live_tracking_interval_minutes", "logo_path"
+})
 
 
 @router.get("/config")
@@ -109,8 +123,10 @@ async def get_config(
         cache_ts = int(row_dict.get("updated_at").timestamp()) if row_dict.get("updated_at") else 0
         logo_url = f"{base_url}/api/company/{row_dict['company_id']}/logo?v={cache_ts}"
 
-    # If authenticated, return full config including sensitive fields
+    # If authenticated, return full config including sensitive fields (masking secrets)
     if current_user:
+        if row_dict.get("smtp_password"):
+            row_dict["smtp_password"] = mask_secret(row_dict["smtp_password"])
         return dict(row_dict, logo_url=logo_url, apk_url=apk_url, ios_url=ios_url)
 
     # Public response — only branding fields (no webhook, SMTP, or face config)
@@ -148,6 +164,8 @@ async def update_config(
     smtp_from_email: Optional[str] = Form(None),
     smtp_to_email: Optional[str] = Form(None),
     email_notify_monthly_report: Optional[str] = Form(None),
+    live_tracking_enabled: Optional[str] = Form(None),
+    live_tracking_interval_minutes: Optional[int] = Form(None),
     logo: Optional[UploadFile] = File(None),
     current_user=Depends(get_current_admin),
 ):
@@ -182,13 +200,20 @@ async def update_config(
     if smtp_username is not None:
         updates["smtp_username"] = smtp_username
     if smtp_password is not None:
-        updates["smtp_password"] = smtp_password
+        clean_pwd = smtp_password.strip()
+        # Only update if not a masked placeholder and not empty
+        if clean_pwd and clean_pwd != "********":
+            updates["smtp_password"] = encrypt_secret(clean_pwd)
     if smtp_from_email is not None:
         updates["smtp_from_email"] = smtp_from_email
     if smtp_to_email is not None:
         updates["smtp_to_email"] = smtp_to_email
     if email_notify_monthly_report is not None:
         updates["email_notify_monthly_report"] = email_notify_monthly_report.lower() == "true"
+    if live_tracking_enabled is not None:
+        updates["live_tracking_enabled"] = live_tracking_enabled.lower() == "true"
+    if live_tracking_interval_minutes is not None:
+        updates["live_tracking_interval_minutes"] = max(5, min(120, int(live_tracking_interval_minutes)))
 
     if logo:
         if not logo.content_type.startswith("image/"):
@@ -215,6 +240,9 @@ async def update_config(
         with open(logo_path, "wb") as f:
             f.write(content)
         updates["logo_path"] = logo_path
+
+    # Whitelist filtering to avoid arbitrary column mutation (H11)
+    updates = {k: v for k, v in updates.items() if k in _ALLOWED_CONFIG_UPDATE_FIELDS}
 
     if not updates:
         raise HTTPException(status_code=400, detail="No hay datos para actualizar")

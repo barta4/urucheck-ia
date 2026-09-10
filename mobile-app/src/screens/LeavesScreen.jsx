@@ -140,7 +140,7 @@ export default function LeavesScreen({ onBack }) {
                 <View key={l.id} style={styles.card}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardDates}>{l.start_date} al {l.end_date}</Text>
-                    <Text style={styles.cardStatus}>{STATUS_LABELS[l.status]}</Text>
+                    <Text style={styles.cardStatus}>{STATUS_LABELS[l.status] || l.status}</Text>
                   </View>
                   <Text style={styles.cardReason}>{REASON_LABELS[l.reason]}</Text>
                 </View>

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from schemas import LoginRequest, TokenResponse
-from auth import verify_password, create_access_token
+from auth import verify_password, create_access_token, oauth2_scheme, revoke_token
 from database import database
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -89,3 +89,12 @@ async def login(request: Request, data: LoginRequest):
         company_status=user_dict["company_status"],
         is_super_admin=user_dict.get("is_super_admin", False),
     )
+
+
+@router.post("/logout")
+async def logout(token: str = Depends(oauth2_scheme)):
+    """
+    Revokes the current JWT access token so it cannot be used again.
+    """
+    revoked = await revoke_token(token)
+    return {"status": "ok", "message": "Sesión cerrada correctamente", "revoked": revoked}

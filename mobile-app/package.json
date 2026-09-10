@@ -5,7 +5,11 @@
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
-    "ios": "expo start --ios"
+    "ios": "expo start --ios",
+    "bundle": "node ./node_modules/expo/bin/cli export",
+    "build:apk": "eas build --platform android --profile preview",
+    "build:ios": "eas build --platform ios --profile preview",
+    "update": "eas update --branch preview"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.0.0",
@@ -33,6 +37,7 @@
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
-    "babel-preset-expo": "^55.0.9"
+    "babel-preset-expo": "^55.0.9",
+    "eas-cli": "^24.0.0"
   }
 }

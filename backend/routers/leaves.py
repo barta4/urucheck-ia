@@ -32,6 +32,9 @@ async def create_leave_request(
         cert_path = os.path.join(cert_dir, filename)
         
         content = await certificate.read()
+        if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
+            raise HTTPException(status_code=413, detail="El certificado excede el tamaño máximo permitido (10 MB).")
+
         with open(cert_path, "wb") as f:
             f.write(content)
 
