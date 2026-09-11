@@ -1,21 +1,28 @@
 # 📝 TODO — Estado Actual y Tareas del Sistema
 
-> **Última actualización:** Septiembre 2026 — **Versión 2.10.0**
+> **Última actualización:** Septiembre 2026 — **Versión 2.11.0**
 
 ---
 
-## ✅ Resuelto Recientemente (v2.10.0)
+## ✅ Resuelto Recientemente (v2.11.0)
 
-1. **Corrección del Ciclo Dinámico de Marcación (`GET /api/attendance/today`):**
+1. **Optimización y Endurecimiento de Google Gemini Vision (`backend/face_service.py`):**
+   * Migración a llamadas asíncronas no bloqueantes con `model.generate_content_async` y timeout de 8 segundos (`asyncio.wait_for`), evitando congelamiento del event loop en FastAPI/Uvicorn.
+   * Normalización universal con Pillow (`PIL.Image` y `ImageOps.exif_transpose`) soportando JPG, PNG, WebP y rotación automática de selfies de smartphones.
+   * Modo estructurado JSON nativo (`response_mime_type: "application/json"`) y parser con regex defensivo.
+   * Mensajes de error claros ante baja confianza (indicando porcentaje) y validación de rostros en fotos de legajo.
+   * 8 nuevas pruebas unitarias automatizadas añadidas, alcanzando 60 tests con 100% de éxito.
+
+2. **Corrección del Ciclo Dinámico de Marcación (`GET /api/attendance/today`):**
    * Eliminado el error `UnboundLocalError` en `backend/routers/attendance.py` ocasionado por una importación interna de `settings`.
    * Ahora la app móvil recibe el estado del día con código HTTP 200 y el botón cambia dinámicamente según la etapa de la jornada:
      * 🟢 **Registrar Entrada** ➔ ☕ **Iniciar Descanso** ➔ 💼 **Volver al Trabajo** ➔ 🔴 **Registrar Salida** ➔ ✅ **Jornada Completa**.
 
-2. **Permisos de Volúmenes en Docker y Guardado de Fotos (`v2.9` / `v2.10`):**
+3. **Permisos de Volúmenes en Docker y Guardado de Fotos (`v2.9` / `v2.10`):**
    * Ajustado `backend/Dockerfile` otorgando permisos `chmod -R 777 /app/photos` y liberando la ejecución de usuario para convivir de forma nativa con los volúmenes de Docker en VPS (`photos_data:/app/photos`).
    * Capa defensiva en `attendance.py` y `leaves.py` con respaldo automático a `/tmp/photos` y `/tmp/photos/certificates` en caso de cualquier bloqueo de sistema de archivos.
 
-3. **Auditoría Técnica y Refactorización Integral:**
+4. **Auditoría Técnica y Refactorización Integral:**
    * **Servicio de Pagos Centralizado (`backend/payment_service.py`):** Unificación de checkout preferences de MercadoPago, verificación criptográfica HMAC SHA-256 de webhooks y procesamiento atómico de notificaciones. Eliminadas más de 190 líneas de código duplicado.
    * **Seguridad en Consultas SQL (`backend/db_utils.py`):** Helper `build_dynamic_update_query` con lista blanca de columnas para evitar inyecciones SQL en actualizaciones dinámicas.
    * **Frontend Admin Limpio (`frontend-admin`):** Módulo `fileDownloader.js` para descargas Blob con liberación de memoria y exportador CSV UTF-8 con BOM compatible con Microsoft Excel en todas las páginas.
@@ -23,17 +30,12 @@
    * **Corrección de Deprecaciones:** Migración de `datetime.utcnow()` a `datetime.now(timezone.utc)` y modelos a Pydantic v2 `ConfigDict`.
    * **Corrección de UI Móvil:** Resuelto error de estilos no definidos en `LeavesScreen.jsx`.
 
-4. **Suite de Pruebas Automatizadas:**
-   * 52 tests automatizados pasando al 100% en `pytest backend/tests/` cubriendo:
-     * Verificación de zonas horarias en horario nocturno.
-     * Avance de estados de asistencia y geocercas permisivas.
-     * Seguridad de autenticación y tokens JWT.
-     * Firmas de webhooks HMAC y expiración.
-     * Queries dinámicas y exportación de logs.
+5. **Suite de Pruebas Automatizadas:**
+   * 60 tests automatizados pasando al 100% en `pytest backend/tests/`.
 
-5. **Despliegue Multi-Plataforma en Docker Hub:**
+6. **Despliegue Multi-Plataforma en Docker Hub:**
    * Imágenes publicadas para `linux/amd64`:
-     * 🏷️ `docker.io/alfredobartaburu/urucheck-backend:v2.10` (y `latest`)
+     * 🏷️ `docker.io/alfredobartaburu/urucheck-backend:v2.11` (y `latest`)
      * 🏷️ `docker.io/alfredobartaburu/urucheck-frontend:v2.8` (y `latest`)
    * `docker-compose.yml` sincronizado para despliegue directo en Dokploy con Traefik.
 
