@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from contextlib import asynccontextmanager
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -437,12 +438,27 @@ FIELD_TRANSLATIONS_ES = {
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = []
+    sanitized_errors = []
     for err in exc.errors():
+        err_copy = dict(err)
+        if "ctx" in err_copy and isinstance(err_copy["ctx"], dict):
+            ctx_copy = dict(err_copy["ctx"])
+            for k, v in ctx_copy.items():
+                if isinstance(v, Exception):
+                    ctx_copy[k] = str(v)
+            err_copy["ctx"] = ctx_copy
+        sanitized_errors.append(err_copy)
+
         loc = err.get("loc", [])
         field_raw = str(loc[-1]) if loc else "campo"
         field_label = FIELD_TRANSLATIONS_ES.get(field_raw, field_raw)
         err_type = str(err.get("type", ""))
         msg = str(err.get("msg", ""))
+
+        clean_msg = msg
+        for prefix in ["Value error, ", "Assertion failed, "]:
+            if clean_msg.startswith(prefix):
+                clean_msg = clean_msg[len(prefix):]
 
         if "missing" in err_type:
             errors.append(f"El campo '{field_label}' es obligatorio y no fue completado.")
@@ -461,10 +477,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         elif "uuid" in err_type or "uuid" in msg.lower():
             errors.append(f"El campo '{field_label}' tiene un formato de identificador no válido.")
         else:
-            errors.append(f"Valor incorrecto en '{field_label}': {msg}.")
+            if field_label.lower() in clean_msg.lower():
+                errors.append(clean_msg if clean_msg.endswith(".") else f"{clean_msg}.")
+            else:
+                errors.append(f"Valor incorrecto en '{field_label}': {clean_msg}.")
 
     readable_detail = " | ".join(errors) if errors else "Datos del formulario incompletos o con formato inválido."
-    return JSONResponse(status_code=422, content={"detail": readable_detail, "errors": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": readable_detail, "errors": jsonable_encoder(sanitized_errors)})
 
 @app.exception_handler(Exception)
 async def custom_exception_handler(request: Request, exc: Exception):

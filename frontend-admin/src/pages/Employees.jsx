@@ -184,6 +184,19 @@ export default function Employees() {
 
   const createEmployee = async (e) => {
     e.preventDefault()
+    if (!form.password || form.password.length < 8) {
+      error('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (!/\d/.test(form.password)) {
+      error('La contraseña debe incluir al menos un número.')
+      return
+    }
+    if (!/[A-Z]/.test(form.password)) {
+      error('La contraseña debe incluir al menos una letra mayúscula.')
+      return
+    }
+
     setLoading(true)
     try {
       await api.post('/employees/', form)
@@ -211,6 +224,21 @@ export default function Employees() {
 
   const saveEdit = async (e) => {
     e.preventDefault()
+    if (editForm.password) {
+      if (editForm.password.length < 8) {
+        error('La contraseña debe tener al menos 8 caracteres.')
+        return
+      }
+      if (!/\d/.test(editForm.password)) {
+        error('La contraseña debe incluir al menos un número.')
+        return
+      }
+      if (!/[A-Z]/.test(editForm.password)) {
+        error('La contraseña debe incluir al menos una letra mayúscula.')
+        return
+      }
+    }
+
     setLoading(true)
     try {
       const payload = {
@@ -845,6 +873,7 @@ export default function Employees() {
                 placeholder="••••••••"
                 className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
               />
+              <p className="text-[11px] text-gray-400 mt-1">Mínimo 8 caracteres, al menos un número y una mayúscula.</p>
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase text-gray-600 mb-1">Rol</label>
@@ -928,6 +957,7 @@ export default function Employees() {
                 placeholder="••••••••"
                 className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
               />
+              <p className="text-[11px] text-gray-400 mt-1">Mínimo 8 caracteres, al menos un número y una mayúscula.</p>
             </div>
             <div>
               <label className="block text-xs font-semibold uppercase text-gray-600 mb-1">Rol</label>

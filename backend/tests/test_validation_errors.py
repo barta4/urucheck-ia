@@ -57,3 +57,27 @@ def test_validation_error_time_format():
     assert isinstance(data["detail"], str)
     assert "Hora de entrada" in data["detail"]
     assert "formato de hora válido" in data["detail"]
+
+def test_validation_error_value_error_json_serializable():
+    """
+    Ensure custom field_validators raising ValueError (e.g. EmployeeCreate password complexity)
+    do NOT trigger 500 TypeError during JSON serialization in validation_exception_handler.
+    """
+    from schemas import EmployeeCreate
+
+    @app_for_testing.post("/test-employee")
+    def dummy_employee_endpoint(payload: EmployeeCreate):
+        return {"status": "ok"}
+
+    response = client.post("/test-employee", json={
+        "name": "Juan Perez",
+        "email": "juan@example.com",
+        "password": "123"  # Too short, should raise ValueError in field_validator
+    })
+    assert response.status_code == 422
+    data = response.json()
+    assert "detail" in data
+    assert "errors" in data
+    assert isinstance(data["errors"], list)
+    assert "La contraseña debe tener al menos 8 caracteres." in data["detail"]
+
