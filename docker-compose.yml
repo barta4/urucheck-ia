@@ -35,7 +35,7 @@ services:
 
   # ── Backend API ─────────────────────────────────────────────────────────────
   backend:
-    image: alfredobartaburu/urucheck-backend:v2.12
+    image: alfredobartaburu/urucheck-backend:v2.13
     container_name: urucheck_api
     restart: unless-stopped
     environment:
@@ -74,7 +74,7 @@ services:
   
   # ── Frontend Admin ──────────────────────────────────────────────────────────
   frontend:
-    image: alfredobartaburu/urucheck-frontend:v2.9
+    image: alfredobartaburu/urucheck-frontend:v2.10
     container_name: urucheck_admin
     restart: unless-stopped
     environment:

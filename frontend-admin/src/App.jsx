@@ -21,17 +21,27 @@ import SaasPlans from './pages/SaasPlans'
 import SaasAudit from './pages/SaasAudit'
 
 function PrivateRoute({ children }) {
-  const { user, loading } = useAuth()
+  const { user, loading, logout } = useAuth()
   if (loading) return <div className="flex items-center justify-center h-screen text-gray-400">Cargando...</div>
   if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'admin' && !user.is_super_admin) {
+    logout()
+    return <Navigate to="/login" replace />
+  }
   return children
 }
 
 function SaasRoute({ children }) {
-  const { user, loading } = useAuth()
+  const { user, loading, logout } = useAuth()
   if (loading) return <div className="flex items-center justify-center h-screen text-gray-400">Cargando...</div>
   if (!user) return <Navigate to="/login" replace />
-  if (!user.is_super_admin) return <Navigate to="/dashboard" replace />
+  if (!user.is_super_admin) {
+    if (user.role === 'admin') {
+      return <Navigate to="/dashboard" replace />
+    }
+    logout()
+    return <Navigate to="/login" replace />
+  }
   return children
 }
 

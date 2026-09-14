@@ -28,6 +28,7 @@ class LoginRequest(BaseModel):
     password: str
     device_id: Optional[str] = None
     company_slug: Optional[str] = None
+    portal: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str

@@ -40,7 +40,7 @@ export default function Login() {
         setShowCompanySlug(true)
         setError('Tu correo está asociado a múltiples empresas. Por favor, ingresa el identificador de tu empresa.')
       } else {
-        setError(err.response?.data?.detail || 'Error al iniciar sesión')
+        setError(err.response?.data?.detail || err.message || 'Error al iniciar sesión')
       }
     } finally {
       setLoading(false)

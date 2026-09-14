@@ -60,3 +60,45 @@ def test_tenant_photo_isolation_prefix_check():
     # Other company file should NOT match
     other_file = f"face_{company_id_b}_emp_888.jpg"
     assert other_file.startswith(valid_prefixes_a) is False
+
+def test_get_current_admin_rejects_employee():
+    import asyncio
+    from auth import get_current_admin
+    from fastapi import HTTPException
+    
+    employee_user = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "company_id": "22222222-2222-2222-2222-222222222222",
+        "name": "Juan Perez",
+        "email": "juan@empresa.com",
+        "role": "employee",
+        "is_super_admin": False
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(get_current_admin(employee_user))
+    assert exc_info.value.status_code == 403
+    assert "administrador" in exc_info.value.detail.lower()
+
+def test_get_current_admin_accepts_admin():
+    import asyncio
+    from auth import get_current_admin
+    
+    admin_user = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "company_id": "22222222-2222-2222-2222-222222222222",
+        "name": "Admin Boss",
+        "email": "admin@empresa.com",
+        "role": "admin",
+        "is_super_admin": False
+    }
+    result = asyncio.run(get_current_admin(admin_user))
+    assert result["role"] == "admin"
+
+def test_login_request_portal_schema():
+    from schemas import LoginRequest
+    
+    req_default = LoginRequest(email="test@empresa.com", password="Password123")
+    assert req_default.portal is None
+    
+    req_admin = LoginRequest(email="test@empresa.com", password="Password123", portal="admin")
+    assert req_admin.portal == "admin"

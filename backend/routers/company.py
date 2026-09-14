@@ -124,8 +124,9 @@ async def get_config(
         cache_ts = int(row_dict.get("updated_at").timestamp()) if row_dict.get("updated_at") else 0
         logo_url = f"{base_url}/api/company/{row_dict['company_id']}/logo?v={cache_ts}"
 
-    # If authenticated, return full config including sensitive fields (masking secrets)
-    if current_user:
+    # Only return full config (including webhooks, SMTP, face verification) to company admins or super-admins
+    is_admin = current_user and (current_user.get("role") == "admin" or current_user.get("is_super_admin", False))
+    if is_admin:
         if row_dict.get("smtp_password"):
             row_dict["smtp_password"] = mask_secret(row_dict["smtp_password"])
         return dict(row_dict, logo_url=logo_url, apk_url=apk_url, ios_url=ios_url)

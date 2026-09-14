@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/subscriptions", tags=["subscriptions"])
 
 
 @router.get("/my")
-async def get_my_subscription(current_user=Depends(get_current_user)):
+async def get_my_subscription(current_user=Depends(get_current_admin)):
     """Get current user's company subscription"""
     company_id = current_user["company_id"]
 

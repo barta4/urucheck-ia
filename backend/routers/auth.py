@@ -56,6 +56,13 @@ async def login(request: Request, data: LoginRequest):
 
     user_dict = dict(user)
 
+    # Restricción: los empleados no pueden acceder al portal de administración de empresas
+    if data.portal == "admin" and user_dict["role"] != "admin" and not user_dict.get("is_super_admin", False):
+        raise HTTPException(
+            status_code=403,
+            detail="Acceso denegado: Este portal es exclusivo para administradores de empresas. Los empleados deben utilizar la aplicación móvil."
+        )
+
     if data.device_id and user_dict["role"] != "admin": # Allow admins to login from anywhere if desired, or maybe apply to everyone. The prompt said "empleado". Usually admins can use web. But the web doesn't send device_id.
         # Actually, let's just apply it if device_id is sent. Web login won't send it.
         stored_device_id = user_dict.get("device_id")

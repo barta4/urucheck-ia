@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 from schemas import PlanCreate, PlanUpdate, PlanOut
-from auth import get_current_user, get_current_super_admin
+from auth import get_current_admin, get_current_super_admin
 from database import database
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/plans", tags=["plans"])
 
 
 @router.get("/", response_model=List[dict])
-async def list_plans(current_user=Depends(get_current_user)):
+async def list_plans(current_user=Depends(get_current_admin)):
     """List all available active plans with company count."""
     rows = await database.fetch_all(
         """

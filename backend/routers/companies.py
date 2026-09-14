@@ -170,7 +170,7 @@ async def list_companies(
 
 
 @router.get("/me")
-async def get_my_company(current_user=Depends(get_current_user)):
+async def get_my_company(current_user=Depends(get_current_admin)):
     """Get current user's company info"""
     company_id = current_user["company_id"]
     row = await database.fetch_one(
