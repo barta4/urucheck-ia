@@ -16,7 +16,8 @@ import {
   X,
   Smartphone,
   Clock,
-  Plus
+  Plus,
+  Search
 } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
@@ -143,8 +144,13 @@ export default function Employees() {
     title: '',
     message: '',
     confirmVariant: 'danger',
+    confirmText: 'Confirmar',
     onConfirm: null,
   })
+
+  // Search & Filter state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
 
   // Bulk import state
   const [bulkRows, setBulkRows] = useState([])
@@ -266,7 +272,8 @@ export default function Employees() {
       message: emp.active
         ? `Al desactivar a ${emp.name}, no podrá registrar asistencias ni iniciar sesión en la aplicación móvil.`
         : `Se reactivará el acceso de ${emp.name} al sistema de asistencia.`,
-      confirmVariant: emp.active ? 'danger' : 'primary',
+      confirmVariant: emp.active ? 'warning' : 'primary',
+      confirmText: emp.active ? 'Desactivar' : 'Activar',
       onConfirm: async () => {
         try {
           await api.patch(`/employees/${emp.id}`, { active: !emp.active })
@@ -275,6 +282,26 @@ export default function Employees() {
           fetchEmployees()
         } catch (e) {
           error('Error al actualizar estado del empleado')
+        }
+      }
+    })
+  }
+
+  const handleDeleteEmployee = (emp) => {
+    setConfirmState({
+      isOpen: true,
+      title: `¿Eliminar definitivamente a ${emp.name}?`,
+      message: `Esta acción es PERMANENTE e IRREVERSIBLE.\n\nSe eliminarán de la base de datos el empleado y todos sus datos asociados:\n• Registros de asistencia y fotografías\n• Turnos y horarios asignados\n• Historial de geocercas y biometría facial\n• Solicitudes de licencias y reportes de ubicación\n\n¿Estás seguro de que deseas eliminar este empleado?`,
+      confirmVariant: 'danger',
+      confirmText: 'Eliminar definitivamente',
+      onConfirm: async () => {
+        try {
+          const res = await api.delete(`/employees/${emp.id}`)
+          success(res.data?.message || `Empleado ${emp.name} eliminado definitivamente`)
+          setConfirmState(prev => ({ ...prev, isOpen: false }))
+          fetchEmployees()
+        } catch (err) {
+          error(err.response?.data?.detail || 'Error al eliminar el empleado')
         }
       }
     })
@@ -579,6 +606,30 @@ export default function Employees() {
     }
   }
 
+  const filteredEmployees = useMemo(() => {
+    return employees.filter(emp => {
+      if (statusFilter === 'active' && !emp.active) return false
+      if (statusFilter === 'inactive' && emp.active) return false
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim()
+        const nameMatch = emp.name?.toLowerCase().includes(q)
+        const emailMatch = emp.email?.toLowerCase().includes(q)
+        const docMatch = emp.document_id?.toLowerCase().includes(q)
+        const phoneMatch = emp.phone?.toLowerCase().includes(q)
+        return Boolean(nameMatch || emailMatch || docMatch || phoneMatch)
+      }
+      return true
+    })
+  }, [employees, statusFilter, searchQuery])
+
+  const stats = useMemo(() => {
+    const total = employees.length
+    const active = employees.filter(e => e.active).length
+    const inactive = total - active
+    return { total, active, inactive }
+  }, [employees])
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header with Actions */}
@@ -623,6 +674,61 @@ export default function Employees() {
         </div>
       </div>
 
+      {/* Search & Filter Bar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Buscar por nombre, C.I., email o teléfono..."
+            className="w-full pl-10 pr-9 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5 rounded-md"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5 p-1 bg-gray-100 rounded-xl text-xs font-medium self-start sm:self-auto">
+          <button
+            onClick={() => setStatusFilter('all')}
+            className={`px-3 py-1.5 rounded-lg transition ${
+              statusFilter === 'all'
+                ? 'bg-white text-gray-900 shadow-xs font-semibold'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Todos ({stats.total})
+          </button>
+          <button
+            onClick={() => setStatusFilter('active')}
+            className={`px-3 py-1.5 rounded-lg transition ${
+              statusFilter === 'active'
+                ? 'bg-white text-emerald-700 shadow-xs font-semibold'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Activos ({stats.active})
+          </button>
+          <button
+            onClick={() => setStatusFilter('inactive')}
+            className={`px-3 py-1.5 rounded-lg transition ${
+              statusFilter === 'inactive'
+                ? 'bg-white text-gray-900 shadow-xs font-semibold'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Inactivos ({stats.inactive})
+          </button>
+        </div>
+      </div>
+
       {/* Employees Table Card */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="overflow-x-auto">
@@ -638,14 +744,16 @@ export default function Employees() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {employees.length === 0 ? (
+              {filteredEmployees.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="px-6 py-12 text-center text-gray-500">
-                    No hay empleados registrados. Agrega uno nuevo o importa una plantilla CSV.
+                    {searchQuery || statusFilter !== 'all'
+                      ? 'No se encontraron empleados que coincidan con la búsqueda o filtro aplicado.'
+                      : 'No hay empleados registrados. Agrega uno nuevo o importa una plantilla CSV.'}
                   </td>
                 </tr>
               ) : (
-                employees.map(emp => (
+                filteredEmployees.map(emp => (
                   <tr key={emp.id} className="hover:bg-gray-50/70 transition-colors">
                     <td className="px-6 py-4">
                       <div className="font-semibold text-gray-900">{emp.name}</div>
@@ -716,12 +824,19 @@ export default function Employees() {
                           onClick={() => toggleActive(emp)}
                           className={`p-2 rounded-xl transition ${
                             emp.active
-                              ? 'text-gray-400 hover:text-red-600 hover:bg-red-50'
+                              ? 'text-gray-400 hover:text-amber-600 hover:bg-amber-50'
                               : 'text-gray-400 hover:text-emerald-600 hover:bg-emerald-50'
                           }`}
-                          title={emp.active ? 'Desactivar' : 'Activar'}
+                          title={emp.active ? 'Desactivar empleado' : 'Activar empleado'}
                         >
                           {emp.active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEmployee(emp)}
+                          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition"
+                          title="Eliminar definitivamente"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </td>
@@ -1284,7 +1399,7 @@ export default function Employees() {
         title={confirmState.title}
         message={confirmState.message}
         confirmVariant={confirmState.confirmVariant}
-        confirmText="Confirmar"
+        confirmText={confirmState.confirmText || 'Confirmar'}
         cancelText="Cancelar"
         onConfirm={confirmState.onConfirm}
         onCancel={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}

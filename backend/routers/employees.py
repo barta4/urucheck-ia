@@ -9,6 +9,7 @@ from config import settings
 from schedule_validator import find_schedule_conflict
 import uuid
 import os
+import json
 import secrets
 
 logger = logging.getLogger(__name__)
@@ -23,11 +24,20 @@ _ALLOWED_EMPLOYEE_UPDATE_FIELDS = {
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
 @router.get("/", response_model=List[dict])
-async def list_employees(current_user=Depends(get_current_admin)):
+async def list_employees(
+    active_only: Optional[bool] = None,
+    current_user=Depends(get_current_admin)
+):
     company_id = current_user["company_id"]
+    conditions = ["company_id = :cid"]
+    params = {"cid": company_id}
+    if active_only is not None:
+        conditions.append("active = :act")
+        params["act"] = active_only
+    where = " AND ".join(conditions)
     rows = await database.fetch_all(
-        "SELECT id, name, email, role, active, created_at, document_id, address, phone FROM employees WHERE company_id = :cid ORDER BY name",
-        {"cid": company_id}
+        f"SELECT id, name, email, role, active, created_at, document_id, address, phone FROM employees WHERE {where} ORDER BY name",
+        params
     )
     return [dict(r) for r in rows]
 
@@ -194,11 +204,104 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user=D
 @router.delete("/{employee_id}")
 async def delete_employee(employee_id: str, current_user=Depends(get_current_admin)):
     company_id = current_user["company_id"]
-    await database.execute(
-        "UPDATE employees SET active = false WHERE id = :id AND company_id = :cid",
+
+    # 1. Verify employee exists and belongs to this company
+    emp = await database.fetch_one(
+        "SELECT id, name, email, role, face_reference_path FROM employees WHERE id = :id AND company_id = :cid",
         {"id": employee_id, "cid": company_id}
     )
-    return {"message": "Empleado desactivado"}
+    if not emp:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+    # 2. Prevent self-deletion of the current admin user
+    if str(current_user["id"]) == str(employee_id):
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes eliminar tu propia cuenta de administrador en uso."
+        )
+
+    # 3. Prevent deleting the only active administrator of the company
+    if emp["role"] == "admin":
+        admin_count = await database.fetch_one(
+            "SELECT COUNT(*) as cnt FROM employees WHERE company_id = :cid AND role = 'admin' AND active = true",
+            {"cid": company_id}
+        )
+        if admin_count and admin_count["cnt"] <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="No se puede eliminar el único administrador activo de la empresa. Asigna el rol administrador a otro usuario primero."
+            )
+
+    # 4. Clean up disk files: face enrollment photo
+    if emp.get("face_reference_path") and os.path.exists(emp["face_reference_path"]):
+        try:
+            os.remove(emp["face_reference_path"])
+        except Exception as e:
+            logger.warning("No se pudo eliminar foto facial en disco de %s: %s", employee_id, e)
+
+    # Clean up disk files: attendance check-in photos
+    attendance_photos = await database.fetch_all(
+        "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND photo_path IS NOT NULL",
+        {"eid": employee_id, "cid": company_id}
+    )
+    for row in attendance_photos:
+        p = row.get("photo_path")
+        if p and os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
+
+    # Clean up disk files: leave request certificate attachments
+    leave_certs = await database.fetch_all(
+        "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND company_id = :cid AND certificate_path IS NOT NULL",
+        {"eid": employee_id, "cid": company_id}
+    )
+    for row in leave_certs:
+        c = row.get("certificate_path")
+        if c and os.path.exists(c):
+            try:
+                os.remove(c)
+            except Exception:
+                pass
+
+    # 5. Defensively delete related rows in database
+    await database.execute("DELETE FROM schedules WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    await database.execute("DELETE FROM employee_geofences WHERE employee_id = :eid", {"eid": employee_id})
+    await database.execute("DELETE FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    await database.execute("DELETE FROM daily_summaries WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    await database.execute("DELETE FROM streaks WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    await database.execute("DELETE FROM bonus_records WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    await database.execute("DELETE FROM leave_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    try:
+        await database.execute("DELETE FROM employee_location_reports WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
+    except Exception:
+        pass
+
+    # Finally delete the employee record
+    await database.execute(
+        "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
+        {"eid": employee_id, "cid": company_id}
+    )
+
+    # 6. Audit log
+    try:
+        await database.execute(
+            """
+            INSERT INTO audit_logs (company_id, user_id, action, resource, resource_id, details)
+            VALUES (:cid, :uid, 'employee_deleted', 'employee', :eid, :details)
+            """,
+            {
+                "cid": company_id,
+                "uid": current_user["id"],
+                "eid": employee_id,
+                "details": json.dumps({"deleted_name": emp["name"], "deleted_email": emp["email"]})
+            }
+        )
+    except Exception as e:
+        logger.warning("Error al registrar auditoría de eliminación de empleado: %s", e)
+
+    return {"message": f"Empleado {emp['name']} y todos sus datos asociados fueron eliminados permanentemente", "id": employee_id}
 
 @router.get("/{employee_id}/schedules")
 async def get_schedules(employee_id: str, current_user=Depends(get_current_admin)):
