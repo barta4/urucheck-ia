@@ -87,3 +87,42 @@ def test_delete_employee_success():
             "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
             {"eid": target_emp_id, "cid": current_admin["company_id"]}
         )
+        # Verify nonexistent daily_summaries is NEVER queried
+        for call_args in mock_db.execute.call_args_list:
+            assert "daily_summaries" not in call_args[0][0]
+
+def test_delete_employee_resilient_to_missing_child_tables():
+    current_admin = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "company_id": "22222222-2222-2222-2222-222222222222",
+        "role": "admin"
+    }
+    target_emp_id = "55555555-5555-5555-5555-555555555555"
+
+    mock_db = MagicMock()
+    mock_db.fetch_one = AsyncMock(return_value={
+        "id": target_emp_id,
+        "name": "Maria Lopez",
+        "email": "maria@empresa.com",
+        "role": "employee",
+        "face_reference_path": None
+    })
+    mock_db.fetch_all = AsyncMock(return_value=[])
+
+    # Simulate child table failing (e.g. relation does not exist or cascade error)
+    async def mock_execute(query, params=None):
+        if "leave_requests" in query or "password_reset_requests" in query:
+            raise Exception('relation "leave_requests" does not exist')
+        return None
+
+    mock_db.execute = AsyncMock(side_effect=mock_execute)
+
+    with patch("routers.employees.database", mock_db):
+        # Must not raise 500 or Exception, must delete employee
+        res = asyncio.run(delete_employee(target_emp_id, current_admin))
+        assert res["id"] == target_emp_id
+        mock_db.execute.assert_any_call(
+            "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
+            {"eid": target_emp_id, "cid": current_admin["company_id"]}
+        )
+

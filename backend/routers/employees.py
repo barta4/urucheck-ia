@@ -240,43 +240,53 @@ async def delete_employee(employee_id: str, current_user=Depends(get_current_adm
             logger.warning("No se pudo eliminar foto facial en disco de %s: %s", employee_id, e)
 
     # Clean up disk files: attendance check-in photos
-    attendance_photos = await database.fetch_all(
-        "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND photo_path IS NOT NULL",
-        {"eid": employee_id, "cid": company_id}
-    )
-    for row in attendance_photos:
-        p = row.get("photo_path")
-        if p and os.path.exists(p):
-            try:
-                os.remove(p)
-            except Exception:
-                pass
+    try:
+        attendance_photos = await database.fetch_all(
+            "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND photo_path IS NOT NULL",
+            {"eid": employee_id, "cid": company_id}
+        )
+        for row in attendance_photos:
+            p = row.get("photo_path")
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("Error buscando fotos de asistencia para eliminar: %s", e)
 
     # Clean up disk files: leave request certificate attachments
-    leave_certs = await database.fetch_all(
-        "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND company_id = :cid AND certificate_path IS NOT NULL",
-        {"eid": employee_id, "cid": company_id}
-    )
-    for row in leave_certs:
-        c = row.get("certificate_path")
-        if c and os.path.exists(c):
-            try:
-                os.remove(c)
-            except Exception:
-                pass
+    try:
+        leave_certs = await database.fetch_all(
+            "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND company_id = :cid AND certificate_path IS NOT NULL",
+            {"eid": employee_id, "cid": company_id}
+        )
+        for row in leave_certs:
+            c = row.get("certificate_path")
+            if c and os.path.exists(c):
+                try:
+                    os.remove(c)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("Error buscando certificados de licencias para eliminar: %s", e)
 
     # 5. Defensively delete related rows in database
-    await database.execute("DELETE FROM schedules WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    await database.execute("DELETE FROM employee_geofences WHERE employee_id = :eid", {"eid": employee_id})
-    await database.execute("DELETE FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    await database.execute("DELETE FROM daily_summaries WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    await database.execute("DELETE FROM streaks WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    await database.execute("DELETE FROM bonus_records WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    await database.execute("DELETE FROM leave_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    try:
-        await database.execute("DELETE FROM employee_location_reports WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id})
-    except Exception:
-        pass
+    child_cleanup_queries = [
+        ("DELETE FROM schedules WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM employee_geofences WHERE employee_id = :eid", {"eid": employee_id}),
+        ("DELETE FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM streaks WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM bonus_records WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM leave_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM password_reset_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+        ("DELETE FROM employee_location_reports WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
+    ]
+    for q, params in child_cleanup_queries:
+        try:
+            await database.execute(q, params)
+        except Exception as ex:
+            logger.warning("Error defensivo eliminando registros relacionados (%s): %s", q, ex)
 
     # Finally delete the employee record
     await database.execute(
