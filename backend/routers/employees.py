@@ -201,18 +201,30 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user=D
     )
     return {"message": "Actualizado correctamente"}
 
+@router.get("/{employee_id}")
+async def get_employee(employee_id: str, current_user=Depends(get_current_admin)):
+    company_id = current_user["company_id"]
+    emp = await database.fetch_one(
+        "SELECT id, name, email, role, active, created_at, document_id, address, phone FROM employees WHERE id = :id AND company_id = :cid",
+        {"id": employee_id, "cid": company_id}
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    return dict(emp)
+
 @router.delete("/{employee_id}")
 async def delete_employee(employee_id: str, current_user=Depends(get_current_admin)):
     try:
         company_id = current_user["company_id"]
 
         # 1. Verify employee exists and belongs to this company
-        emp = await database.fetch_one(
+        emp_row = await database.fetch_one(
             "SELECT id, name, email, role, face_reference_path FROM employees WHERE id = :id AND company_id = :cid",
             {"id": employee_id, "cid": company_id}
         )
-        if not emp:
+        if not emp_row:
             raise HTTPException(status_code=404, detail="Empleado no encontrado")
+        emp = dict(emp_row)
 
         # 2. Prevent self-deletion of the current admin user
         if str(current_user["id"]) == str(employee_id):
@@ -249,7 +261,7 @@ async def delete_employee(employee_id: str, current_user=Depends(get_current_adm
                 {"eid": employee_id}
             )
             for row in attendance_photos:
-                p = row.get("photo_path")
+                p = dict(row).get("photo_path")
                 if p:
                     try:
                         if os.path.exists(p):
@@ -266,7 +278,7 @@ async def delete_employee(employee_id: str, current_user=Depends(get_current_adm
                 {"eid": employee_id}
             )
             for row in leave_certs:
-                c = row.get("certificate_path")
+                c = dict(row).get("certificate_path")
                 if c:
                     try:
                         if os.path.exists(c):

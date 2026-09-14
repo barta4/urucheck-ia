@@ -582,6 +582,6 @@ async def health() -> dict:
         "database": db_status,
         "service": "attendance-api",
         "version": "3.0.1",
-        "build_version": "v2.16",
+        "build_version": "v2.17",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
