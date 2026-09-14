@@ -203,115 +203,131 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user=D
 
 @router.delete("/{employee_id}")
 async def delete_employee(employee_id: str, current_user=Depends(get_current_admin)):
-    company_id = current_user["company_id"]
+    try:
+        company_id = current_user["company_id"]
 
-    # 1. Verify employee exists and belongs to this company
-    emp = await database.fetch_one(
-        "SELECT id, name, email, role, face_reference_path FROM employees WHERE id = :id AND company_id = :cid",
-        {"id": employee_id, "cid": company_id}
-    )
-    if not emp:
-        raise HTTPException(status_code=404, detail="Empleado no encontrado")
-
-    # 2. Prevent self-deletion of the current admin user
-    if str(current_user["id"]) == str(employee_id):
-        raise HTTPException(
-            status_code=400,
-            detail="No puedes eliminar tu propia cuenta de administrador en uso."
+        # 1. Verify employee exists and belongs to this company
+        emp = await database.fetch_one(
+            "SELECT id, name, email, role, face_reference_path FROM employees WHERE id = :id AND company_id = :cid",
+            {"id": employee_id, "cid": company_id}
         )
+        if not emp:
+            raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
-    # 3. Prevent deleting the only active administrator of the company
-    if emp["role"] == "admin":
-        admin_count = await database.fetch_one(
-            "SELECT COUNT(*) as cnt FROM employees WHERE company_id = :cid AND role = 'admin' AND active = true",
-            {"cid": company_id}
-        )
-        if admin_count and admin_count["cnt"] <= 1:
+        # 2. Prevent self-deletion of the current admin user
+        if str(current_user["id"]) == str(employee_id):
             raise HTTPException(
                 status_code=400,
-                detail="No se puede eliminar el único administrador activo de la empresa. Asigna el rol administrador a otro usuario primero."
+                detail="No puedes eliminar tu propia cuenta de administrador en uso."
             )
 
-    # 4. Clean up disk files: face enrollment photo
-    if emp.get("face_reference_path") and os.path.exists(emp["face_reference_path"]):
+        # 3. Prevent deleting the only active administrator of the company
+        if emp.get("role") == "admin":
+            admin_count = await database.fetch_one(
+                "SELECT COUNT(*) as cnt FROM employees WHERE company_id = :cid AND role = 'admin' AND active = true",
+                {"cid": company_id}
+            )
+            if admin_count and admin_count["cnt"] <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No se puede eliminar el único administrador activo de la empresa. Asigna el rol administrador a otro usuario primero."
+                )
+
+        # 4. Clean up disk files: face enrollment photo
+        face_path = emp.get("face_reference_path")
+        if face_path:
+            try:
+                if os.path.exists(face_path):
+                    os.remove(face_path)
+            except Exception as e:
+                logger.warning("No se pudo eliminar foto facial en disco de %s: %s", employee_id, e)
+
+        # Clean up disk files: attendance check-in photos
         try:
-            os.remove(emp["face_reference_path"])
+            attendance_photos = await database.fetch_all(
+                "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND photo_path IS NOT NULL",
+                {"eid": employee_id}
+            )
+            for row in attendance_photos:
+                p = row.get("photo_path")
+                if p:
+                    try:
+                        if os.path.exists(p):
+                            os.remove(p)
+                    except Exception:
+                        pass
         except Exception as e:
-            logger.warning("No se pudo eliminar foto facial en disco de %s: %s", employee_id, e)
+            logger.warning("Error buscando fotos de asistencia para eliminar: %s", e)
 
-    # Clean up disk files: attendance check-in photos
-    try:
-        attendance_photos = await database.fetch_all(
-            "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND photo_path IS NOT NULL",
-            {"eid": employee_id, "cid": company_id}
-        )
-        for row in attendance_photos:
-            p = row.get("photo_path")
-            if p and os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning("Error buscando fotos de asistencia para eliminar: %s", e)
-
-    # Clean up disk files: leave request certificate attachments
-    try:
-        leave_certs = await database.fetch_all(
-            "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND company_id = :cid AND certificate_path IS NOT NULL",
-            {"eid": employee_id, "cid": company_id}
-        )
-        for row in leave_certs:
-            c = row.get("certificate_path")
-            if c and os.path.exists(c):
-                try:
-                    os.remove(c)
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning("Error buscando certificados de licencias para eliminar: %s", e)
-
-    # 5. Defensively delete related rows in database
-    child_cleanup_queries = [
-        ("DELETE FROM schedules WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM employee_geofences WHERE employee_id = :eid", {"eid": employee_id}),
-        ("DELETE FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM streaks WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM bonus_records WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM leave_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM password_reset_requests WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-        ("DELETE FROM employee_location_reports WHERE employee_id = :eid AND company_id = :cid", {"eid": employee_id, "cid": company_id}),
-    ]
-    for q, params in child_cleanup_queries:
+        # Clean up disk files: leave request certificate attachments
         try:
-            await database.execute(q, params)
-        except Exception as ex:
-            logger.warning("Error defensivo eliminando registros relacionados (%s): %s", q, ex)
+            leave_certs = await database.fetch_all(
+                "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND certificate_path IS NOT NULL",
+                {"eid": employee_id}
+            )
+            for row in leave_certs:
+                c = row.get("certificate_path")
+                if c:
+                    try:
+                        if os.path.exists(c):
+                            os.remove(c)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("Error buscando certificados de licencias para eliminar: %s", e)
 
-    # Finally delete the employee record
-    await database.execute(
-        "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
-        {"eid": employee_id, "cid": company_id}
-    )
+        # 5. Defensively delete related rows in database
+        # Order matters! Child tables with FK to schedules (like attendance_logs) must be deleted before schedules.
+        # Filter by employee_id alone so legacy records with NULL company_id are also purged cleanly.
+        child_cleanup_queries = [
+            ("DELETE FROM attendance_logs WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM employee_location_reports WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM leave_requests WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM password_reset_requests WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM streaks WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM bonus_records WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM employee_geofences WHERE employee_id = :eid", {"eid": employee_id}),
+            ("DELETE FROM schedules WHERE employee_id = :eid", {"eid": employee_id}),
+        ]
+        for q, params in child_cleanup_queries:
+            try:
+                await database.execute(q, params)
+            except Exception as ex:
+                logger.warning("Error defensivo eliminando registros relacionados (%s): %s", q, ex)
 
-    # 6. Audit log
-    try:
+        # Finally delete the employee record
         await database.execute(
-            """
-            INSERT INTO audit_logs (company_id, user_id, action, resource, resource_id, details)
-            VALUES (:cid, :uid, 'employee_deleted', 'employee', :eid, :details)
-            """,
-            {
-                "cid": company_id,
-                "uid": current_user["id"],
-                "eid": employee_id,
-                "details": json.dumps({"deleted_name": emp["name"], "deleted_email": emp["email"]})
-            }
+            "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
+            {"eid": employee_id, "cid": company_id}
         )
-    except Exception as e:
-        logger.warning("Error al registrar auditoría de eliminación de empleado: %s", e)
 
-    return {"message": f"Empleado {emp['name']} y todos sus datos asociados fueron eliminados permanentemente", "id": employee_id}
+        # 6. Audit log
+        try:
+            await database.execute(
+                """
+                INSERT INTO audit_logs (company_id, user_id, action, resource, resource_id, details)
+                VALUES (:cid, :uid, 'employee_deleted', 'employee', :eid, :details)
+                """,
+                {
+                    "cid": company_id,
+                    "uid": current_user["id"],
+                    "eid": employee_id,
+                    "details": json.dumps({"deleted_name": emp["name"], "deleted_email": emp["email"]})
+                }
+            )
+        except Exception as e:
+            logger.warning("Error al registrar auditoría de eliminación de empleado: %s", e)
+
+        return {"message": f"Empleado {emp['name']} y todos sus datos asociados fueron eliminados permanentemente", "id": employee_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Error crítico al eliminar empleado %s: %s", employee_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al eliminar empleado: {str(e)}"
+        )
 
 @router.get("/{employee_id}/schedules")
 async def get_schedules(employee_id: str, current_user=Depends(get_current_admin)):
