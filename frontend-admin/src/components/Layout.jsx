@@ -1,8 +1,13 @@
+import { lazy, Suspense } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useCompany } from '../context/CompanyContext'
 import TrialBanner from './TrialBanner'
-import AiChat from '../pages/AiChat'
+import { safeColor } from '../utils/security'
+
+// The AI widget pulls in the Gemini chat UI — load it only after the
+// rest of the panel is interactive.
+const AiChat = lazy(() => import('../pages/AiChat'))
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: '📊' },
@@ -18,12 +23,13 @@ export default function Layout() {
   const company = useCompany()
   const navigate = useNavigate()
 
-  const handleLogout = () => {
-    logout()
+  const handleLogout = async () => {
+    await logout()
     navigate('/login')
   }
 
-  const sidebarBg = company.accent_color || '#1d4ed8'
+  // Branding color is admin-configurable — validate before inline interpolation
+  const sidebarBg = safeColor(company.accent_color, '#1d4ed8')
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -85,7 +91,9 @@ export default function Layout() {
       </div>
 
       {/* Floating AI Agent Widget */}
-      <AiChat />
+      <Suspense fallback={null}>
+        <AiChat />
+      </Suspense>
     </div>
   )
 }

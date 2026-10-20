@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
 import { useCompany } from '../context/CompanyContext'
 import api from '../api'
+import { safeExternalUrl } from '../utils/security'
 
 const STATUS_CONFIG = {
   on_time: { label: 'En hora', class: 'bg-green-100 text-green-700', dot: 'bg-green-500' },
@@ -144,7 +145,13 @@ export default function Dashboard() {
       </div>
 
       {/* Mobile App Download Banner */}
-      {(company.apk_url || company.ios_url) && (
+      {(() => {
+        // Super-admin-configurable URLs — only http(s) links are rendered,
+        // blocking javascript: and other dangerous schemes in <a href>.
+        const apkUrl = safeExternalUrl(company.apk_url)
+        const iosUrl = safeExternalUrl(company.ios_url)
+        if (!apkUrl && !iosUrl) return null
+        return (
         <div className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 text-white shadow-md flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="space-y-2">
             <h4 className="text-lg font-bold flex items-center gap-2">
@@ -155,9 +162,9 @@ export default function Dashboard() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-            {company.apk_url && (
+            {apkUrl && (
               <a
-                href={company.apk_url}
+                href={apkUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex-1 md:flex-none text-center bg-white text-blue-700 hover:bg-blue-50 px-5 py-2.5 rounded-xl text-sm font-semibold transition shadow whitespace-nowrap"
@@ -165,9 +172,9 @@ export default function Dashboard() {
                 🤖 Descargar APK (Android)
               </a>
             )}
-            {company.ios_url && (
+            {iosUrl && (
               <a
-                href={company.ios_url}
+                href={iosUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex-1 md:flex-none text-center bg-gray-900 text-white hover:bg-gray-800 px-5 py-2.5 rounded-xl text-sm font-semibold transition border border-gray-700 shadow whitespace-nowrap"
@@ -177,7 +184,8 @@ export default function Dashboard() {
             )}
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

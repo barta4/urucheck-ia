@@ -8,6 +8,9 @@ const api = axios.create({
   baseURL: API_URL
 })
 
+// Auth note: the session lives in an httpOnly cookie set by the backend
+// (immune to XSS token theft). The Authorization header below is kept only
+// as a compatibility path for sessions created before the cookie migration.
 api.interceptors.request.use(config => {
   const token = localStorage.getItem('token')
   if (token) config.headers.Authorization = `Bearer ${token}`
@@ -19,7 +22,7 @@ api.interceptors.response.use(
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
-      sessionStorage.removeItem('token')
+      localStorage.removeItem('user')
       window.location.href = '/login'
     }
     return Promise.reject(err)
@@ -28,12 +31,13 @@ api.interceptors.response.use(
 
 export const logout = async () => {
   try {
+    // Server-side revocation + cookie clearing
     await api.post('/auth/logout')
   } catch (_) {
     // Graceful fallback if network fails
   } finally {
     localStorage.removeItem('token')
-    sessionStorage.removeItem('token')
+    localStorage.removeItem('user')
     window.location.href = '/login'
   }
 }

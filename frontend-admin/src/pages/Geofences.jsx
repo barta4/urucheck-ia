@@ -1,17 +1,22 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { MapContainer, TileLayer, Circle, Marker, Popup, useMapEvents, useMap } from 'react-leaflet'
 import L from 'leaflet'
+// Leaflet assets are bundled locally — no CDN (unpkg) dependency, no SRI risk
+import 'leaflet/dist/leaflet.css'
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
+import markerIcon from 'leaflet/dist/images/marker-icon.png'
+import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { Search, MapPin, Trash2, UserPlus, CheckCircle2, Navigation, Layers } from 'lucide-react'
 import api from '../api'
 import { useToast } from '../context/ToastContext'
 import ConfirmModal from '../components/ConfirmModal'
 
-// Fix default Leaflet marker icons in React
+// Fix default Leaflet marker icons in React (locally bundled assets)
 delete L.Icon.Default.prototype._getIconUrl
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
 })
 
 // Sub-component to pan the map
@@ -95,8 +100,10 @@ export default function Geofences() {
     if (!searchQuery.trim()) return
     setIsSearching(true)
     try {
+      // Nominatim's usage policy requires an identifying User-Agent
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=1`
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=1`,
+        { headers: { 'User-Agent': 'UruCheck-Admin-Panel/1.0' } }
       )
       const data = await response.json()
       if (data && data.length > 0) {
@@ -119,13 +126,26 @@ export default function Geofences() {
 
   const createGeofence = async (e) => {
     e.preventDefault()
-    if (!form.latitude || !form.longitude) {
-      error('Por favor selecciona una ubicación en el mapa')
+    // Validate coordinates client-side — the backend rejects invalid values,
+    // but typos like "34,90" (comma) would otherwise produce confusing 422s.
+    const lat = parseFloat(form.latitude)
+    const lng = parseFloat(form.longitude)
+    if (!form.latitude || !form.longitude || Number.isNaN(lat) || Number.isNaN(lng)) {
+      error('Por favor selecciona una ubicación válida en el mapa (latitud y longitud numéricas)')
+      return
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      error('Coordenadas fuera de rango (lat: -90..90, lng: -180..180)')
       return
     }
     setIsSubmitting(true)
     try {
-      await api.post('/dashboard/geofences', form)
+      await api.post('/dashboard/geofences', {
+        ...form,
+        latitude: lat,
+        longitude: lng,
+        radius_meters: parseInt(form.radius_meters, 10) || 100,
+      })
       success(`Geocerca "${form.name}" creada exitosamente`)
       setForm({ name: '', latitude: '', longitude: '', radius_meters: 100 })
       fetchGeofences()

@@ -33,7 +33,24 @@ export default function TrialBanner() {
 
   const handleSelectPlan = async (planId) => {
     setSelectedPlanId(planId)
+    const plan = plans.find(p => p.id === planId)
     try {
+      // Paid plans must go through MercadoPago checkout — the backend no
+      // longer allows self-assigning paid plans without payment.
+      if (plan && Number(plan.price_monthly) > 0) {
+        const res = await api.post('/payments/create-preference', null, {
+          params: {
+            amount: plan.price_monthly,
+            description: `Plan ${plan.name} — Suscripción mensual UruCheck IA`,
+          }
+        })
+        if (res.data?.init_point) {
+          window.location.href = res.data.init_point
+          return
+        }
+        showError('No se pudo iniciar el pago. Verifica la configuración de MercadoPago.')
+        return
+      }
       await api.post('/subscriptions/change-plan', { plan_id: planId })
       success('Plan actualizado con éxito. ¡Gracias por confiar en UruCheck IA!')
       setShowUpgradeModal(false)
@@ -41,6 +58,8 @@ export default function TrialBanner() {
       setSub(res.data)
     } catch (e) {
       showError(e.response?.data?.detail || 'Error al procesar la actualización del plan')
+    } finally {
+      setSelectedPlanId(null)
     }
   }
 

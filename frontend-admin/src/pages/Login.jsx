@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import api from '../api'
+import { safeColor } from '../utils/security'
 
 export default function Login() {
   const { login } = useAuth()
@@ -12,6 +13,10 @@ export default function Login() {
   const [company, setCompany] = useState({ company_name: 'Control de Asistencia', logo_url: null, accent_color: '#1d4ed8' })
   const [showCompanySlug, setShowCompanySlug] = useState(false)
   const [companySlug, setCompanySlug] = useState('')
+
+  // Branding colors come from a PUBLIC endpoint configurable by any company
+  // admin — validate the hex format before using it in inline styles.
+  const accent = safeColor(company.accent_color, '#1d4ed8')
 
   useEffect(() => {
     let slug = new URLSearchParams(window.location.search).get('slug')
@@ -48,10 +53,10 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${company.accent_color}dd, ${company.accent_color})` }}>
+    <div className="min-h-screen flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${accent}dd, ${accent})` }}>
       <div className="bg-white rounded-2xl shadow-2xl p-10 w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-4 overflow-hidden" style={{ backgroundColor: company.accent_color + '15', border: `2px solid ${company.accent_color}30` }}>
+          <div className="w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-4 overflow-hidden" style={{ backgroundColor: accent + '15', border: `2px solid ${accent}30` }}>
             {company.logo_url ? (
               <img src={company.logo_url} alt="Logo" className="w-full h-full object-contain p-2" />
             ) : (

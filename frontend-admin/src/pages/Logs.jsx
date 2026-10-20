@@ -3,6 +3,49 @@ import { useToast } from '../context/ToastContext'
 import api from '../api'
 import { STATUS_LABELS, TYPE_LABELS } from '../constants/attendance'
 import { downloadBlob } from '../utils/fileDownloader'
+import { fetchProtectedBlobUrl } from '../utils/security'
+
+/**
+ * Attendance photo thumbnail. Loads the image via an authenticated request
+ * (Authorization header) instead of embedding the JWT in the URL query
+ * string, which would leak the token into access logs, proxies and
+ * browser history.
+ */
+function PhotoThumb({ filename, onOpen }) {
+  const [url, setUrl] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let objectUrl = null
+    let cancelled = false
+    fetchProtectedBlobUrl(`/api/photos/${filename}`)
+      .then(u => {
+        objectUrl = u
+        if (!cancelled) setUrl(u)
+      })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [filename])
+
+  if (failed) {
+    return <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-400 text-xs" title="No se pudo cargar la foto">✕</div>
+  }
+  if (!url) {
+    return <div className="w-10 h-10 rounded-full bg-gray-100 animate-pulse" />
+  }
+  return (
+    <button onClick={() => onOpen(url)}>
+      <img
+        src={url}
+        alt="selfie"
+        className="w-10 h-10 rounded-full object-cover border-2 border-gray-200 hover:border-blue-400 transition"
+      />
+    </button>
+  )
+}
 
 const getDefaultDateRange = () => {
   const today = new Date()
@@ -36,14 +79,19 @@ export default function Logs() {
   const [loading, setLoading] = useState(false)
   const [downloadingExcel, setDownloadingExcel] = useState(false)
   const [photoModal, setPhotoModal] = useState(null)
-  const token = localStorage.getItem('token') || ''
+  // Server-side pagination state
+  const PAGE_SIZE = 100
+  const [page, setPage] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
 
   useEffect(() => {
     api.get('/employees/').then(r => setEmployees(r.data))
     fetchLogs()
   }, [])
 
-  const fetchLogs = async (customFilters = null) => {
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+
+  const fetchLogs = async (customFilters = null, targetPage = 1) => {
     setLoading(true)
     try {
       const active = customFilters || filters
@@ -51,19 +99,29 @@ export default function Logs() {
       const dFrom = active.date_from || def.date_from
       const dTo = active.date_to || def.date_to
 
-      const params = {}
+      const params = {
+        limit: PAGE_SIZE,
+        offset: (targetPage - 1) * PAGE_SIZE,
+      }
       if (active.employee_id) params.employee_id = active.employee_id
       if (dFrom) params.date_from = dFrom
       if (dTo) params.date_to = dTo
       if (active.status) params.status = active.status
       const res = await api.get('/dashboard/logs', { params })
       setLogs(res.data)
+      setTotalCount(parseInt(res.headers['x-total-count'] || '0', 10))
+      setPage(targetPage)
     } catch (err) {
       console.error('Error al cargar registros', err)
       showError('Error al cargar registros de asistencia')
     } finally {
       setLoading(false)
     }
+  }
+
+  const goToPage = (p) => {
+    if (p < 1 || p > totalPages || p === page) return
+    fetchLogs(null, p)
   }
 
   const handleDownloadExcel = async () => {
@@ -211,13 +269,7 @@ export default function Logs() {
                   <tr key={log.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3">
                       {photoFilename ? (
-                        <button onClick={() => setPhotoModal(`/api/photos/${photoFilename}?token=${token}`)}>
-                          <img
-                            src={`/api/photos/${photoFilename}?token=${token}`}
-                            alt="selfie"
-                            className="w-10 h-10 rounded-full object-cover border-2 border-gray-200 hover:border-blue-400 transition"
-                          />
-                        </button>
+                        <PhotoThumb filename={photoFilename} onOpen={setPhotoModal} />
                       ) : (
                         <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 text-xs">—</div>
                       )}
@@ -253,12 +305,54 @@ export default function Logs() {
                     <td className="px-4 py-3 text-gray-400 text-xs">
                       {log.latitude ? `${Number(log.latitude).toFixed(4)}, ${Number(log.longitude).toFixed(4)}` : '-'}
                     </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                   </tr>
+                 )
+               })}
+             </tbody>
+           </table>
+         </div>
+
+        {/* Pagination */}
+        {totalCount > PAGE_SIZE && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+            <p className="text-xs text-gray-500">
+              {totalCount} registros — página {page} de {totalPages}
+            </p>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => goToPage(1)}
+                disabled={page === 1}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-default"
+                title="Primera página"
+              >
+                «
+              </button>
+              <button
+                onClick={() => goToPage(page - 1)}
+                disabled={page === 1}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-default"
+              >
+                Anterior
+              </button>
+              <span className="px-2 text-xs font-semibold text-gray-700">{page} / {totalPages}</span>
+              <button
+                onClick={() => goToPage(page + 1)}
+                disabled={page >= totalPages}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-default"
+              >
+                Siguiente
+              </button>
+              <button
+                onClick={() => goToPage(totalPages)}
+                disabled={page >= totalPages}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-default"
+                title="Última página"
+              >
+                »
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Photo modal */}

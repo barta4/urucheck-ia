@@ -5,7 +5,7 @@ import { useToast } from '../context/ToastContext'
 import { downloadBlob } from '../utils/fileDownloader'
 
 export default function Bonuses() {
-  const { success, error: showError, info } = useToast()
+  const { success, error: showError } = useToast()
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7))
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -24,9 +24,19 @@ export default function Bonuses() {
     }
   }
 
-  const exportCSV = () => {
-    window.open(`/api/dashboard/bonus-report/export?month=${month}`, '_blank')
-    info('Descargando archivo CSV...')
+  const exportCSV = async () => {
+    // Fetch via axios so the Authorization header is attached — a plain
+    // window.open() cannot send it and the endpoint always returned 401.
+    try {
+      const response = await api.get('/dashboard/bonus-report/export', {
+        params: { month },
+        responseType: 'blob'
+      })
+      downloadBlob(response.data, `bonos_${month}.csv`, 'text/csv')
+      success('Reporte CSV descargado correctamente')
+    } catch (e) {
+      showError('Error al descargar el archivo CSV')
+    }
   }
 
   const exportPDF = async () => {

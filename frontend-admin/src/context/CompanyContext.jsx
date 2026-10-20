@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react'
 import api from '../api'
 import { useAuth } from './AuthContext'
+import { safeColor } from '../utils/security'
 
 const defaultConfig = {
   company_name: 'Mi Empresa',
@@ -33,8 +34,10 @@ export function CompanyProvider({ children }) {
       const url = slug ? `/company/config?slug=${encodeURIComponent(slug)}` : '/company/config'
       const res = await api.get(url)
       setConfig(res.data)
-      document.documentElement.style.setProperty('--color-primary', res.data.primary_color || '#2563eb')
-      document.documentElement.style.setProperty('--color-accent', res.data.accent_color || '#1d4ed8')
+      // Branding colors are DB-stored and admin-configurable — validate hex
+      // format before writing them into CSS custom properties.
+      document.documentElement.style.setProperty('--color-primary', safeColor(res.data.primary_color, '#2563eb'))
+      document.documentElement.style.setProperty('--color-accent', safeColor(res.data.accent_color, '#1d4ed8'))
       document.title = (res.data.company_name || 'Mi Empresa') + ' — Asistencia'
     } catch (e) {
       console.error('No se pudo cargar configuración de empresa', e)

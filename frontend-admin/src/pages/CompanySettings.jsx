@@ -13,7 +13,7 @@ const NOTIFY_TOGGLES = [
 
 export default function CompanySettings() {
   const company = useCompany()
-  const { success: showSuccess, error: showError } = useToast()
+  const { success: showSuccess, error: showError, info } = useToast()
   const [form, setForm] = useState({
     company_name: company.company_name || 'Mi Empresa',
     primary_color: company.primary_color || '#2563eb',
@@ -317,6 +317,34 @@ export default function CompanySettings() {
               <p className="text-xs text-red-500 mt-1 font-medium">❌ {testMsg}</p>
             )}
             <p className="text-xs text-gray-400 mt-1">Compatible con Make, n8n, Zapier, Discord y cualquier servicio que acepte POST JSON.</p>
+
+            {/* Signing secret (read-only) — lets the admin verify webhook authenticity */}
+            {company.webhook_secret && form.webhook_url && (
+              <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                <label className="block text-xs font-semibold text-gray-600 mb-1">
+                  🔐 Secreto de firma (verifica que los eventos vengan de UruCheck)
+                </label>
+                <div className="flex gap-2 items-center">
+                  <code className="flex-1 text-[11px] bg-white border border-gray-200 rounded px-2 py-1.5 font-mono text-gray-700 overflow-x-auto whitespace-nowrap">
+                    {company.webhook_secret}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(company.webhook_secret)
+                      info('Secreto copiado al portapapeles')
+                    }}
+                    className="px-2.5 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 hover:bg-gray-100 transition whitespace-nowrap"
+                  >
+                    Copiar
+                  </button>
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1.5 leading-relaxed">
+                  Cada evento llega con las cabeceras <code>X-UruCheck-Signature</code> y <code>X-UruCheck-Timestamp</code>.
+                  Verifica: HMAC-SHA256(secreto, timestamp + "." + cuerpo_crudo).
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Notification toggles */}

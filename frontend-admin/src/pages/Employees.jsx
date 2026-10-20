@@ -156,12 +156,20 @@ export default function Employees() {
   const [bulkRows, setBulkRows] = useState([])
   const [bulkErrors, setBulkErrors] = useState([])
   const [isImporting, setIsImporting] = useState(false)
+  const [generatedCredentials, setGeneratedCredentials] = useState(null)
 
   const fetchEmployees = async () => {
     try {
       const res = await api.get('/employees/')
       setEmployees(res.data)
-      res.data.forEach(emp => fetchFaceStatus(emp.id))
+      // Single batch request for all face statuses (fixes N+1: one request
+      // per employee on every list load)
+      try {
+        const fs = await api.get('/employees/face-statuses')
+        setFaceStatuses(fs.data)
+      } catch {
+        // Non-critical — list still renders
+      }
     } catch (e) {
       error('Error al cargar la lista de empleados')
     }
@@ -179,6 +187,8 @@ export default function Employees() {
   useEffect(() => { fetchEmployees() }, [])
 
   // ─── Face enrollment ──────────────────────────────────────────────
+  // Used only to refresh a single employee's status after enroll/remove
+  // (list loads use the batch /face-statuses endpoint instead).
   const fetchFaceStatus = async (empId) => {
     try {
       const res = await api.get(`/employees/${empId}/face-status`)
@@ -503,9 +513,9 @@ export default function Employees() {
   // ─── Bulk Import & Export ─────────────────────────────────────────
   const downloadTemplate = () => {
     const header = "Nombre,Email,Password,Rol,Cedula,Telefono,Direccion\n"
-    const example = "Juan Perez,juan@empresa.com,123456,employee,1.234.567-8,099123456,Av. 18 de Julio 1234\nMaria Gomez,maria@empresa.com,123456,admin,4.567.890-1,098765432,Bvar. Artigas 567"
+    const example = "Juan Perez,juan@empresa.com,,employee,1.234.567-8,099123456,Av. 18 de Julio 1234\nMaria Gomez,maria@empresa.com,,employee,4.567.890-1,098765432,Bvar. Artigas 567"
     downloadBlob(header + example, 'plantilla_empleados.csv', 'text/csv;charset=utf-8;')
-    info('Plantilla descargada')
+    info('Plantilla descargada. Deja la columna Password vacía para generar contraseñas seguras automáticamente.')
   }
 
   const exportEmployees = () => {
@@ -527,6 +537,29 @@ export default function Employees() {
     success('Listado de empleados exportado en CSV')
   }
 
+  // Quote-aware CSV line parser: handles "quoted,commas" and escaped quotes.
+  const parseCsvLine = (line) => {
+    const out = []
+    let cur = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (inQuotes) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') { cur += '"'; i++ }
+          else inQuotes = false
+        } else cur += ch
+      } else if (ch === '"') {
+        inQuotes = true
+      } else if (ch === ',') {
+        out.push(cur.trim())
+        cur = ''
+      } else cur += ch
+    }
+    out.push(cur.trim())
+    return out
+  }
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0]
     if (!file) return
@@ -544,9 +577,9 @@ export default function Employees() {
       const parsed = []
       const errs = []
       for (let i = 1; i < lines.length; i++) {
-        const parts = lines[i].split(',').map(p => p.trim().replace(/^["']|["']$/g, ''))
+        const parts = parseCsvLine(lines[i])
         const [name, email, password, role, document_id, phone, address] = parts
-        
+
         let rowError = null
         if (!name) rowError = 'Falta el nombre'
         else if (!email || !email.includes('@')) rowError = 'Email inválido'
@@ -557,7 +590,9 @@ export default function Employees() {
           parsed.push({
             name,
             email,
-            password: password || '123456',
+            // Empty password => backend generates a strong random one and
+            // returns it for the admin to distribute. NEVER a known default.
+            password: password || null,
             role: role === 'admin' ? 'admin' : 'employee',
             document_id: document_id || null,
             phone: phone || null,
@@ -583,7 +618,7 @@ export default function Employees() {
         employees: bulkRows.map(r => ({
           name: r.name,
           email: r.email,
-          password: r.password,
+          password: r.password || null,
           role: r.role,
           document_id: r.document_id,
           phone: r.phone,
@@ -594,6 +629,11 @@ export default function Employees() {
       success(res.data.message)
       if (res.data.errors && res.data.errors.length > 0) {
         warning(`Hubo advertencias: ${res.data.errors.join(' ')}`)
+      }
+      // Show auto-generated credentials so the admin can deliver them.
+      // Without this, employees created without a password could never log in.
+      if (Array.isArray(res.data.generated_credentials) && res.data.generated_credentials.length > 0) {
+        setGeneratedCredentials(res.data.generated_credentials)
       }
       setShowBulkImport(false)
       setBulkRows([])
@@ -924,6 +964,61 @@ export default function Employees() {
         </Modal>
       )}
 
+      {/* Generated Credentials Modal (bulk import without passwords) */}
+      {generatedCredentials && (
+        <Modal
+          title="Contraseñas Temporales Generadas"
+          maxWidth="max-w-2xl"
+          onClose={() => setGeneratedCredentials(null)}
+        >
+          <div className="space-y-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+              <p className="font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4" />
+                Guarda estas credenciales ahora — no volverán a mostrarse
+              </p>
+              <p className="text-xs mt-1">
+                Se generaron contraseñas temporales seguras y aleatorias para los empleados importados
+                sin contraseña. Entrégalas a cada empleado; deberán cambiarlas al iniciar sesión.
+              </p>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto border border-gray-200 rounded-xl divide-y text-sm">
+              {generatedCredentials.map((c, i) => (
+                <div key={i} className="p-3 flex items-center justify-between bg-white gap-3">
+                  <span className="text-gray-700 truncate">{c.email}</span>
+                  <code className="px-2 py-1 rounded bg-gray-100 font-mono text-xs whitespace-nowrap select-all">
+                    {c.temp_password}
+                  </code>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t">
+              <button
+                type="button"
+                onClick={() => {
+                  const header = 'Email,Password\n'
+                  const rows = generatedCredentials.map(c => `${c.email},${c.temp_password}`).join('\n')
+                  downloadBlob(header + rows, 'credenciales_empleados.csv', 'text/csv;charset=utf-8;')
+                  info('Credenciales descargadas — guárdalas en un lugar seguro')
+                }}
+                className="px-4 py-2 text-sm font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100"
+              >
+                Descargar CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => setGeneratedCredentials(null)}
+                className="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700"
+              >
+                Listo
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* Create Employee Modal */}
       {showCreate && (
         <Modal title="Nuevo Empleado" onClose={() => setShowCreate(false)}>
@@ -1232,7 +1327,7 @@ export default function Employees() {
                       type="number"
                       value={schedForm.tolerance_minutes}
                       min={0}
-                      max={60}
+                      max={120}
                       onChange={e => setSchedForm({ ...schedForm, tolerance_minutes: parseInt(e.target.value, 10) || 0 })}
                       className="w-full border border-gray-200 rounded-xl px-2.5 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                     />

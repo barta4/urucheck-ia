@@ -51,6 +51,14 @@ export default function SaasBilling() {
     loadHistory()
   }, [])
 
+  // Debounced history search — one request per pause instead of one per keystroke
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadHistory(historySearch)
+    }, 400)
+    return () => clearTimeout(t)
+  }, [historySearch])
+
   const loadBilling = async () => {
     setLoading(true)
     try {
@@ -400,10 +408,7 @@ export default function SaasBilling() {
                 type="text"
                 placeholder="Buscar por empresa, ID MP o método..."
                 value={historySearch}
-                onChange={e => {
-                  setHistorySearch(e.target.value)
-                  loadHistory(e.target.value)
-                }}
+                onChange={e => setHistorySearch(e.target.value)}
                 className="border border-gray-200 rounded-xl px-3.5 py-2 text-sm w-72 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
