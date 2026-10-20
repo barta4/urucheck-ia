@@ -2,10 +2,10 @@
 
 > **v2.11.0** — Sistema multi-tenant con biometría optimizada (Google Gemini Vision async y local dlib), multi-turnos y geocercas diferenciadas, ciclo inteligente de marcación de jornada (Entrada/Descanso/Salida), almacenamiento defensivo de fotos en volúmenes Docker, panel SaaS Master con cobros en USD, integración MercadoPago y eliminación de empresas.
 
-## 🐳 Imágenes Docker Hub (v2.14 / v2.11)
+## 🐳 Imágenes Docker Hub (v2.18 / v2.12)
 
-* **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.14` (y `latest`)
-* **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.11` (y `latest`)
+* **Backend API**: `docker.io/alfredobartaburu/urucheck-backend:v2.18` (y `latest`)
+* **Frontend Admin**: `docker.io/alfredobartaburu/urucheck-frontend:v2.12` (y `latest`)
 
 ---
 
