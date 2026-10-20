@@ -23,6 +23,37 @@ _ALLOWED_EMPLOYEE_UPDATE_FIELDS = {
 
 router = APIRouter(prefix="/api/employees", tags=["employees"])
 
+_VALID_ROLES = ("employee", "admin")
+
+# Maximum upload size for face reference photos (bytes)
+MAX_FACE_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+def _generate_temp_password() -> str:
+    """
+    Generate a strong temporary password that satisfies the complexity policy.
+    token_urlsafe(9) provides ~72 bits of entropy on top of the fixed parts.
+    """
+    return f"Uc{secrets.token_urlsafe(9)}9A"
+
+
+async def _read_upload_limited(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in chunks, aborting as soon as the size limit is exceeded."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 512)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="La imagen excede el tamaño máximo permitido (10 MB)."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 @router.get("/", response_model=List[dict])
 async def list_employees(
     active_only: Optional[bool] = None,
@@ -81,6 +112,7 @@ async def bulk_create_employees(data: EmployeeBulkCreate, current_user=Depends(g
 
     created = 0
     errors = []
+    generated_credentials = []
     seen_batch_emails = set()
 
     # Wrap all inserts in a single transaction for atomicity
@@ -90,10 +122,21 @@ async def bulk_create_employees(data: EmployeeBulkCreate, current_user=Depends(g
             if clean_email in existing_emails or clean_email in seen_batch_emails:
                 errors.append(f"Fila {idx + 1}: Email '{item.email}' ya registrado.")
                 continue
-            
+
+            role = item.role or "employee"
+            if role not in _VALID_ROLES:
+                errors.append(f"Fila {idx + 1}: Rol inválido '{role}' (debe ser 'employee' o 'admin').")
+                continue
+
             seen_batch_emails.add(clean_email)
-            # Generate random secure temporary password if none provided (H13)
-            auto_pwd = item.password or f"UruCheck{secrets.token_hex(4)}!"
+            # Generate a strong random temporary password if none provided (H13).
+            # The generated credentials are returned so the admin can hand
+            # them to each employee — no shared/known default password exists.
+            if item.password:
+                auto_pwd = item.password
+            else:
+                auto_pwd = _generate_temp_password()
+                generated_credentials.append({"email": clean_email, "temp_password": auto_pwd})
             hashed = get_password_hash(auto_pwd)
             await database.execute(
                 """
@@ -105,7 +148,7 @@ async def bulk_create_employees(data: EmployeeBulkCreate, current_user=Depends(g
                     "name": item.name.strip(),
                     "email": clean_email,
                     "password_hash": hashed,
-                    "role": item.role or "employee",
+                    "role": role,
                     "document_id": item.document_id,
                     "address": item.address,
                     "phone": item.phone,
@@ -116,7 +159,27 @@ async def bulk_create_employees(data: EmployeeBulkCreate, current_user=Depends(g
     return {
         "created_count": created,
         "errors": errors,
-        "message": f"Se crearon {created} empleado(s) exitosamente." + (f" Hubo {len(errors)} advertencia(s)." if errors else "")
+        "message": f"Se crearon {created} empleado(s) exitosamente." + (f" Hubo {len(errors)} advertencia(s)." if errors else ""),
+        "generated_credentials": generated_credentials,
+    }
+
+@router.get("/face-statuses")
+async def get_all_face_statuses(current_user=Depends(get_current_admin)):
+    """
+    Batch face-enrollment status for every employee of the company.
+    Replaces the N+1 pattern of calling /{id}/face-status once per employee
+    on every list load — one request instead of one per row.
+    NOTE: must be declared BEFORE /{employee_id} routes, or FastAPI would
+    capture "face-statuses" as a path parameter.
+    """
+    company_id = current_user["company_id"]
+    rows = await database.fetch_all(
+        "SELECT id, face_reference_path FROM employees WHERE company_id = :cid",
+        {"cid": company_id}
+    )
+    return {
+        str(r["id"]): (r["face_reference_path"] is not None and os.path.exists(r["face_reference_path"]))
+        for r in rows
     }
 
 @router.post("/")
@@ -135,6 +198,9 @@ async def create_employee(data: EmployeeCreate, current_user=Depends(get_current
     )
     if existing:
         raise HTTPException(status_code=400, detail="Ya existe un empleado registrado con este correo electrónico.")
+
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(status_code=400, detail="Rol inválido. Debe ser 'employee' o 'admin'.")
 
     hashed = get_password_hash(data.password)
     employee_id = await database.execute(
@@ -245,52 +311,11 @@ async def delete_employee(employee_id: str, current_user=Depends(get_current_adm
                     detail="No se puede eliminar el único administrador activo de la empresa. Asigna el rol administrador a otro usuario primero."
                 )
 
-        # 4. Clean up disk files: face enrollment photo
-        face_path = emp.get("face_reference_path")
-        if face_path:
-            try:
-                if os.path.exists(face_path):
-                    os.remove(face_path)
-            except Exception as e:
-                logger.warning("No se pudo eliminar foto facial en disco de %s: %s", employee_id, e)
-
-        # Clean up disk files: attendance check-in photos
-        try:
-            attendance_photos = await database.fetch_all(
-                "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND photo_path IS NOT NULL",
-                {"eid": employee_id}
-            )
-            for row in attendance_photos:
-                p = dict(row).get("photo_path")
-                if p:
-                    try:
-                        if os.path.exists(p):
-                            os.remove(p)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Error buscando fotos de asistencia para eliminar: %s", e)
-
-        # Clean up disk files: leave request certificate attachments
-        try:
-            leave_certs = await database.fetch_all(
-                "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND certificate_path IS NOT NULL",
-                {"eid": employee_id}
-            )
-            for row in leave_certs:
-                c = dict(row).get("certificate_path")
-                if c:
-                    try:
-                        if os.path.exists(c):
-                            os.remove(c)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning("Error buscando certificados de licencias para eliminar: %s", e)
-
-        # 5. Defensively delete related rows in database
+        # 4. Defensively delete related rows in database FIRST.
         # Order matters! Child tables with FK to schedules (like attendance_logs) must be deleted before schedules.
         # Filter by employee_id alone so legacy records with NULL company_id are also purged cleanly.
+        # Disk files are removed only AFTER the DB rows are gone, so a failed
+        # DELETE never destroys evidence/photos that remain referenced.
         child_cleanup_queries = [
             ("DELETE FROM attendance_logs WHERE employee_id = :eid", {"eid": employee_id}),
             ("DELETE FROM employee_location_reports WHERE employee_id = :eid", {"eid": employee_id}),
@@ -307,11 +332,42 @@ async def delete_employee(employee_id: str, current_user=Depends(get_current_adm
             except Exception as ex:
                 logger.warning("Error defensivo eliminando registros relacionados (%s): %s", q, ex)
 
+        # Collect photo/certificate paths BEFORE the rows disappear
+        disk_paths = []
+        if emp.get("face_reference_path"):
+            disk_paths.append(emp["face_reference_path"])
+        try:
+            attendance_photos = await database.fetch_all(
+                "SELECT photo_path FROM attendance_logs WHERE employee_id = :eid AND photo_path IS NOT NULL",
+                {"eid": employee_id}
+            )
+            disk_paths.extend(dict(r).get("photo_path") for r in attendance_photos if r)
+        except Exception as e:
+            logger.warning("Error buscando fotos de asistencia para eliminar: %s", e)
+        try:
+            leave_certs = await database.fetch_all(
+                "SELECT certificate_path FROM leave_requests WHERE employee_id = :eid AND certificate_path IS NOT NULL",
+                {"eid": employee_id}
+            )
+            disk_paths.extend(dict(r).get("certificate_path") for r in leave_certs if r)
+        except Exception as e:
+            logger.warning("Error buscando certificados de licencias para eliminar: %s", e)
+
         # Finally delete the employee record
         await database.execute(
             "DELETE FROM employees WHERE id = :eid AND company_id = :cid",
             {"eid": employee_id, "cid": company_id}
         )
+
+        # 5. Best-effort disk cleanup AFTER successful DB deletion
+        for p in disk_paths:
+            if not p:
+                continue
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception as e:
+                logger.warning("No se pudo eliminar archivo en disco (%s): %s", p, e)
 
         # 6. Audit log
         try:
@@ -523,16 +579,14 @@ async def enroll_face(
     if old and old["face_reference_path"] and os.path.exists(old["face_reference_path"]):
         try:
             os.remove(old["face_reference_path"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("No se pudo eliminar la referencia facial anterior: %s", e)
 
     ext = photo.filename.split(".")[-1].lower() if photo.filename else "jpg"
     if ext not in ("png", "jpg", "jpeg", "webp"):
         raise HTTPException(status_code=400, detail="Formato no permitido. Use PNG, JPG o WebP")
 
-    content = await photo.read()
-    if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
-        raise HTTPException(status_code=413, detail="La imagen excede el tamaño máximo permitido (10 MB)")
+    content = await _read_upload_limited(photo, MAX_FACE_PHOTO_BYTES)
 
     face_dir = os.path.join(settings.PHOTOS_PATH, "face_references")
     os.makedirs(face_dir, exist_ok=True)
@@ -583,8 +637,8 @@ async def remove_face_enrollment(employee_id: str, current_user=Depends(get_curr
     if emp["face_reference_path"] and os.path.exists(emp["face_reference_path"]):
         try:
             os.remove(emp["face_reference_path"])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("No se pudo eliminar la referencia facial en disco: %s", e)
 
     await database.execute(
         "UPDATE employees SET face_reference_path = NULL WHERE id = :eid AND company_id = :cid",

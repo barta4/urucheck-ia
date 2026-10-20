@@ -3,11 +3,11 @@ Company management endpoints.
 """
 import json
 import re
-from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends, Request
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from typing import Optional
 from pydantic import BaseModel, EmailStr
-from auth import get_password_hash, get_current_user, get_current_admin, get_current_super_admin, create_access_token
+from auth import get_password_hash, get_current_user, get_current_admin, get_current_super_admin, create_access_token, set_auth_cookie
 from database import database
 from db_utils import build_dynamic_update_query
 from schemas import CompanyCreate, CompanyOut, CompanyStatusUpdate
@@ -29,7 +29,7 @@ class RegisterResponse(BaseModel):
 
 @router.post("/register", response_model=RegisterResponse)
 @limiter.limit("5/minute")
-async def register_company(request: Request, data: CompanyCreate):
+async def register_company(request: Request, data: CompanyCreate, response: Response):
     """
     Self-service company registration.
     Creates: company, company_config, admin employee, subscription.
@@ -52,71 +52,74 @@ async def register_company(request: Request, data: CompanyCreate):
     if not plan:
         plan = await database.fetch_one("SELECT * FROM plans WHERE slug = 'free'")
 
-    now = datetime.now()
+    # Use UTC (naive) to stay consistent with subscription trial comparisons
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     trial_days = plan["trial_days"] or 14
     trial_end = now + timedelta(days=trial_days)
 
     hashed_password = get_password_hash(data.admin_password)
 
-    # Create company
-    company_id = await database.execute(
-        """
-        INSERT INTO companies (plan_id, name, slug, admin_email, admin_password_hash,
-                               status, trial_ends_at, billing_name)
-        VALUES (:plan_id, :name, :slug, :email, :password_hash, 'trial', :trial_end, :billing)
-        RETURNING id
-        """,
-        {
-            "plan_id": str(plan["id"]),
-            "name": data.name,
-            "slug": data.slug,
-            "email": data.admin_email,
-            "password_hash": hashed_password,
-            "trial_end": trial_end,
-            "billing": data.billing_name,
-        }
-    )
+    # ── Atomic registration: company + config + admin + subscription + audit.
+    # A partial failure must never leave an orphan company without admin.
+    async with database.transaction():
+        # Create company
+        company_id = await database.execute(
+            """
+            INSERT INTO companies (plan_id, name, slug, admin_email, admin_password_hash,
+                                   status, trial_ends_at, billing_name)
+            VALUES (:plan_id, :name, :slug, :email, :password_hash, 'trial', :trial_end, :billing)
+            RETURNING id
+            """,
+            {
+                "plan_id": str(plan["id"]),
+                "name": data.name,
+                "slug": data.slug,
+                "email": data.admin_email,
+                "password_hash": hashed_password,
+                "trial_end": trial_end,
+                "billing": data.billing_name,
+            }
+        )
 
-    company_id_str = str(company_id)
+        company_id_str = str(company_id)
 
-    # Create config
-    await database.execute(
-        "INSERT INTO company_config (company_id, company_name) VALUES (:cid, :name)",
-        {"cid": company_id_str, "name": data.name}
-    )
+        # Create config
+        await database.execute(
+            "INSERT INTO company_config (company_id, company_name) VALUES (:cid, :name)",
+            {"cid": company_id_str, "name": data.name}
+        )
 
-    # Create admin employee
-    admin_id = await database.execute(
-        """
-        INSERT INTO employees (company_id, name, email, password_hash, role)
-        VALUES (:cid, :name, :email, :password_hash, 'admin')
-        RETURNING id
-        """,
-        {
-            "cid": company_id_str,
-            "name": "Administrador",
-            "email": data.admin_email,
-            "password_hash": hashed_password,
-        }
-    )
+        # Create admin employee
+        admin_id = await database.execute(
+            """
+            INSERT INTO employees (company_id, name, email, password_hash, role)
+            VALUES (:cid, 'Administrador', :email, :password_hash, 'admin')
+            RETURNING id
+            """,
+            {
+                "cid": company_id_str,
+                "email": data.admin_email,
+                "password_hash": hashed_password,
+            }
+        )
 
-    # Create subscription
-    await database.execute(
-        """
-        INSERT INTO subscriptions (company_id, plan_id, status, trial_start, trial_end)
-        VALUES (:cid, :pid, 'trial', :tstart, :tend)
-        """,
-        {"cid": company_id_str, "pid": str(plan["id"]), "tstart": now, "tend": trial_end}
-    )
+        # Create subscription
+        await database.execute(
+            """
+            INSERT INTO subscriptions (company_id, plan_id, status, trial_start, trial_end)
+            VALUES (:cid, :pid, 'trial', :tstart, :tend)
+            """,
+            {"cid": company_id_str, "pid": str(plan["id"]), "tstart": now, "tend": trial_end}
+        )
 
-    # Audit
-    await database.execute(
-        """
-        INSERT INTO audit_logs (company_id, action, resource, details)
-        VALUES (:cid, 'company_created', 'company', :details)
-        """,
-        {"cid": company_id_str, "details": json.dumps({"name": data.name, "plan": plan["name"]})}
-    )
+        # Audit
+        await database.execute(
+            """
+            INSERT INTO audit_logs (company_id, action, resource, details)
+            VALUES (:cid, 'company_created', 'company', :details)
+            """,
+            {"cid": company_id_str, "details": json.dumps({"name": data.name, "plan": plan["name"]})}
+        )
 
     token_data = {
         "sub": str(admin_id),
@@ -124,6 +127,10 @@ async def register_company(request: Request, data: CompanyCreate):
         "company_slug": data.slug,
     }
     token = create_access_token(token_data)
+
+    # Browser clients authenticate via the httpOnly cookie from now on;
+    # the body token remains for API/mobile clients.
+    set_auth_cookie(response, token)
 
     return RegisterResponse(
         message=f"Empresa '{data.name}' creada exitosamente. Tienes {trial_days} días de prueba.",
@@ -198,6 +205,15 @@ async def update_company_status(
     allowed_statuses = {"active", "suspended", "cancelled", "grace"}
     if status not in allowed_statuses:
         raise HTTPException(status_code=400, detail=f"Estado inválido. Debe ser uno de: {', '.join(allowed_statuses)}")
+
+    # SECURITY: re-activating a company (which the platform may have suspended
+    # for non-payment) is reserved to super-admins. A regular admin may only
+    # cancel their own company.
+    if not is_super and status == "active":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo un super-administrador de la plataforma puede reactivar una empresa. Contacta a soporte."
+        )
 
     updates = {}
     updates["status"] = status

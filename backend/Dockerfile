@@ -32,8 +32,15 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-RUN mkdir -p /app/photos \
-    && chmod -R 777 /app/photos
+# Create non-root user and prepare the photos volume directory.
+# Named volumes inherit the ownership of the mount point on first use,
+# so the app can write photos without a world-writable (777) directory.
+RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/photos \
+    && chown -R appuser:appuser /app/photos \
+    && chmod -R 775 /app/photos
+
+USER appuser
 
 EXPOSE 8000
 

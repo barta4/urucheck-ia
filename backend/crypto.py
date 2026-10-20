@@ -12,6 +12,9 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 _fernet_instance: Optional[Fernet] = None
+# Legacy instance derived from SECRET_KEY — kept only to DECRYPT values written
+# before a dedicated ENCRYPTION_KEY existed. Never used to encrypt new data.
+_fernet_legacy_instance: Optional[Fernet] = None
 
 
 def _get_fernet() -> Fernet:
@@ -39,6 +42,19 @@ def _get_fernet() -> Fernet:
     derived_b64 = base64.urlsafe_b64encode(derived_bytes)
     _fernet_instance = Fernet(derived_b64)
     return _fernet_instance
+
+
+def _get_legacy_fernet() -> Fernet:
+    """
+    Fernet instance keyed by SECRET_KEY (pre-ENCRYPTION_KEY scheme).
+    Used only as a decryption fallback so existing ciphertexts remain
+    readable after a dedicated ENCRYPTION_KEY is introduced.
+    """
+    global _fernet_legacy_instance
+    if _fernet_legacy_instance is None:
+        derived_bytes = hashlib.sha256(settings.SECRET_KEY.encode("utf-8")).digest()
+        _fernet_legacy_instance = Fernet(base64.urlsafe_b64encode(derived_bytes))
+    return _fernet_legacy_instance
 
 
 def encrypt_secret(plain_text: Optional[str]) -> Optional[str]:
@@ -80,6 +96,15 @@ def decrypt_secret(cipher_text: Optional[str]) -> Optional[str]:
         decrypted = f.decrypt(cipher_str.encode("utf-8"))
         return decrypted.decode("utf-8")
     except InvalidToken:
+        # Fallback: value may predate the dedicated ENCRYPTION_KEY and have
+        # been encrypted with the SECRET_KEY-derived scheme.
+        if (settings.ENCRYPTION_KEY or "").strip():
+            try:
+                decrypted = _get_legacy_fernet().decrypt(cipher_str.encode("utf-8"))
+                logger.info("[Crypto] Secreto descifrado con clave legacy (SECRET_KEY). Se re-cifrará al actualizar.")
+                return decrypted.decode("utf-8")
+            except InvalidToken:
+                pass
         logger.error("[Crypto] Failed to decrypt secret: invalid token or wrong key")
         return None
     except Exception as e:

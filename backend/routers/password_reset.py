@@ -2,14 +2,21 @@
 Password reset endpoints.
 Since there's no email server, this creates a reset request that the admin can fulfill.
 """
-from fastapi import APIRouter, HTTPException, Depends
+import hashlib
+import logging
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, EmailStr
 from datetime import datetime, timedelta, timezone
 from auth import get_password_hash, get_current_admin
 from database import database
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import uuid
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 from typing import Optional
@@ -25,10 +32,13 @@ class ResetPasswordRequest(BaseModel):
 
 
 @router.post("/forgot-password")
-async def forgot_password(data: ForgotPasswordRequest):
+@limiter.limit("3/minute")
+async def forgot_password(request: Request, data: ForgotPasswordRequest):
     """
     Employee requests password reset.
-    Creates a reset token (valid 24h) in DB. Admin must fulfill it.
+    Creates a reset request (valid 24h) in DB. Admin must fulfill it.
+    Only a SHA-256 hash of the token is stored — a DB leak must not leak
+    usable reset tokens.
     """
     clean_email = data.email.strip() if data.email else ""
     generic_msg = "Si el email existe en el sistema, se ha enviado una solicitud a tu administrador."
@@ -67,15 +77,16 @@ async def forgot_password(data: ForgotPasswordRequest):
         {"eid": str(emp["id"]), "cid": str(emp["company_id"])}
     )
 
-    # Create new reset request with 24h expiry
+    # Create new reset request with 24h expiry (store only the token hash)
     token = str(uuid.uuid4())
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     await database.execute(
         """
         INSERT INTO password_reset_requests (employee_id, company_id, token, status, expires_at)
         VALUES (:eid, :cid, :token, 'pending', :expires_at)
         """,
-        {"eid": str(emp["id"]), "cid": str(emp["company_id"]), "token": token, "expires_at": expires_at}
+        {"eid": str(emp["id"]), "cid": str(emp["company_id"]), "token": token_hash, "expires_at": expires_at}
     )
 
     return {

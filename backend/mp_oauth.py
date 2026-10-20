@@ -1,12 +1,19 @@
 """
 MercadoPago OAuth2 token manager with automatic refresh.
 Stores and rotates access_token + refresh_token pairs.
+
+Tokens are stored ENCRYPTED at rest (Fernet). A database leak must not
+expose tokens that control the platform's billing account.
 """
+import logging
 import os
 import time
 import httpx
 from datetime import datetime, timedelta
 from database import database
+from crypto import encrypt_secret, decrypt_secret
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -17,16 +24,20 @@ TOKEN_EXPIRY_BUFFER = 1800
 
 
 async def get_mp_credentials() -> dict:
-    """Get MP client credentials from DB (saas_settings) or env vars"""
+    """Get MP client credentials from DB (saas_settings) or env vars.
+
+    Secrets stored in saas_settings are Fernet-encrypted; legacy plaintext
+    values are returned as-is by decrypt_secret's graceful fallback.
+    """
     cid_row = await database.fetch_one("SELECT value FROM saas_settings WHERE id = 'mp_client_id'")
     csec_row = await database.fetch_one("SELECT value FROM saas_settings WHERE id = 'mp_client_secret'")
     pub_row = await database.fetch_one("SELECT value FROM saas_settings WHERE id = 'mp_public_key'")
     tok_row = await database.fetch_one("SELECT value FROM saas_settings WHERE id = 'mp_access_token'")
 
     client_id = (cid_row["value"] if cid_row and cid_row["value"] else "") or os.environ.get("MERCADOPAGO_CLIENT_ID", "")
-    client_secret = (csec_row["value"] if csec_row and csec_row["value"] else "") or os.environ.get("MERCADOPAGO_CLIENT_SECRET", "")
+    client_secret = decrypt_secret(csec_row["value"] if csec_row else None) or os.environ.get("MERCADOPAGO_CLIENT_SECRET", "")
     public_key = (pub_row["value"] if pub_row and pub_row["value"] else "") or os.environ.get("MERCADOPAGO_PUBLIC_KEY", "")
-    access_token = (tok_row["value"] if tok_row and tok_row["value"] else "") or os.environ.get("MERCADOPAGO_ACCESS_TOKEN", "")
+    access_token = decrypt_secret(tok_row["value"] if tok_row else None) or os.environ.get("MERCADOPAGO_ACCESS_TOKEN", "")
 
     return {
         "client_id": client_id,
@@ -47,7 +58,7 @@ async def get_mp_access_token() -> str:
     if creds["access_token"]:
         return creds["access_token"]
 
-    # Try from DB (stored from OAuth flow)
+    # Try from DB (stored from OAuth flow, encrypted at rest)
     token_row = await database.fetch_one(
         "SELECT access_token, refresh_token, expires_at FROM mp_oauth_tokens ORDER BY id DESC LIMIT 1"
     )
@@ -56,20 +67,24 @@ async def get_mp_access_token() -> str:
         raise Exception("MercadoPago no configurado. Configura las credenciales en el Panel SaaS Master.")
 
     now = time.time()
+    expires_at = token_row["expires_at"]
 
-    # Token still valid with buffer?
-    if token_row["expires_at"] and token_row["expires_at"] > now + TOKEN_EXPIRY_BUFFER:
-        return token_row["access_token"]
+    # Token still valid with buffer? (decrypt only when actually used)
+    if expires_at and expires_at > now + TOKEN_EXPIRY_BUFFER:
+        return decrypt_secret(token_row["access_token"]) or token_row["access_token"]
 
     # Token expired or about to expire — refresh
     if token_row["refresh_token"]:
         try:
-            new_tokens = await _refresh_token(token_row["refresh_token"])
+            refresh_token = decrypt_secret(token_row["refresh_token"]) or token_row["refresh_token"]
+            new_tokens = await _refresh_token(refresh_token)
             await _store_tokens(new_tokens)
             return new_tokens["access_token"]
         except Exception as e:
-            print(f"[MP Token] Refresh failed: {e}, falling back to expired token")
-            return token_row["access_token"]  # Will likely fail, but best effort
+            # Fail CLOSED: returning an expired token only produces confusing
+            # downstream errors and hides the real misconfiguration.
+            logger.error("[MP Token] Refresh failed: %s — raising (no se usa el token expirado)", e)
+            raise Exception(f"MercadoPago token refresh failed: {e}") from e
 
     # No refresh token available
     raise Exception("MercadoPago token expired and no refresh token available")
@@ -113,15 +128,15 @@ async def _refresh_token(refresh_token: str) -> dict:
 
 
 async def _store_tokens(tokens: dict) -> None:
-    """Store new token pair in DB"""
+    """Store new token pair in DB (encrypted at rest)."""
     await database.execute(
         """
         INSERT INTO mp_oauth_tokens (access_token, refresh_token, expires_at)
         VALUES (:at, :rt, :exp)
         """,
         {
-            "at": tokens["access_token"],
-            "rt": tokens["refresh_token"],
+            "at": encrypt_secret(tokens["access_token"]),
+            "rt": encrypt_secret(tokens["refresh_token"]),
             "exp": tokens["expires_at"],
         }
     )
@@ -170,11 +185,11 @@ async def scheduled_token_refresh():
     Called from APScheduler every 5 hours.
     Proactively refreshes before the 6-hour access_token expiry.
     """
-    print("[MP Token] Verificando refresh del token...")
+    logger.info("[MP Token] Verificando refresh del token...")
 
     env_token = os.environ.get("MERCADOPAGO_ACCESS_TOKEN", "")
     if env_token:
-        print("[MP Token] Token estático detectado en .env — no requiere refresh")
+        logger.info("[MP Token] Token estático detectado en .env — no requiere refresh")
         return
 
     token_row = await database.fetch_one(
@@ -182,7 +197,7 @@ async def scheduled_token_refresh():
     )
 
     if not token_row:
-        print("[MP Token] No hay tokens guardados en DB")
+        logger.info("[MP Token] No hay tokens guardados en DB")
         return
 
     now = time.time()
@@ -190,17 +205,18 @@ async def scheduled_token_refresh():
     # Token válido por más de 1 hora? Skip
     if token_row["expires_at"] and token_row["expires_at"] > now + TOKEN_EXPIRY_BUFFER:
         remaining = int((token_row["expires_at"] - now) / 60)
-        print(f"[MP Token] Token válido por {remaining} min más — skip")
+        logger.info("[MP Token] Token válido por %d min más — skip", remaining)
         return
 
     # Necesita refresh
     if token_row["refresh_token"]:
         try:
-            new_tokens = await _refresh_token(token_row["refresh_token"])
+            refresh_token = decrypt_secret(token_row["refresh_token"]) or token_row["refresh_token"]
+            new_tokens = await _refresh_token(refresh_token)
             await _store_tokens(new_tokens)
             remaining = int((new_tokens["expires_at"] - time.time()) / 60)
-            print(f"[MP Token] Token refrescado exitosamente. Válido por {remaining} min.")
+            logger.info("[MP Token] Token refrescado exitosamente. Válido por %d min.", remaining)
         except Exception as e:
-            print(f"[MP Token] ERROR refrescando: {e}")
+            logger.error("[MP Token] ERROR refrescando: %s", e)
     else:
-        print("[MP Token] No hay refresh_token disponible")
+        logger.warning("[MP Token] No hay refresh_token disponible")

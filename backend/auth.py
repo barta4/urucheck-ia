@@ -1,15 +1,64 @@
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer
 from config import settings
 from database import database
 
+logger = logging.getLogger(__name__)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+# Name of the httpOnly cookie that carries the JWT for browser clients.
+AUTH_COOKIE_NAME = "urucheck_token"
+
+
+class OAuth2PasswordBearerWithCookie(OAuth2PasswordBearer):
+    """
+    Auth scheme that reads the token from the Authorization header first
+    (mobile app / API clients) and falls back to the httpOnly auth cookie
+    (admin web panel). Keeps the Bearer flow fully functional.
+    """
+
+    def __init__(self, tokenUrl: str, cookie_name: str = AUTH_COOKIE_NAME):
+        super().__init__(tokenUrl=tokenUrl, auto_error=False)
+        self.cookie_name = cookie_name
+
+    async def __call__(self, request: Request) -> Optional[str]:
+        header_token = await super().__call__(request)
+        if header_token:
+            return header_token
+        return request.cookies.get(self.cookie_name)
+
+
+oauth2_scheme = OAuth2PasswordBearerWithCookie(tokenUrl="/api/auth/login")
+
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    """Attach the JWT as an httpOnly cookie (browser sessions).
+
+    httpOnly makes the token unreachable from JavaScript (XSS cannot steal
+    the session). SameSite=Lax blocks cross-site requests carrying the
+    cookie, which mitigates CSRF for state-changing endpoints.
+    """
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        httponly=True,
+        secure=not settings.DEBUG,
+        samesite="lax",
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response) -> None:
+    """Remove the auth cookie (logout)."""
+    response.delete_cookie(key=AUTH_COOKIE_NAME, path="/", httponly=True, samesite="lax")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -47,16 +96,22 @@ async def revoke_token(token: str) -> bool:
             {"jti": jti, "exp": expires_at}
         )
         return True
-    except Exception:
+    except Exception as e:
+        # A failed revocation means the token REMAINS valid — must be visible
+        # in logs, never silent.
+        logger.error("[auth] Fallo al revocar token (el token seguirá siendo válido): %s", e)
         return False
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="No autorizado",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    # Token may now come from the Authorization header OR the httpOnly cookie
+    if not token:
+        raise credentials_exception
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
@@ -73,14 +128,37 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
+    # ─── Tenant binding from the DATABASE (never from JWT claims):
+    #  - INNER JOIN drops legacy employees with NULL company_id
+    #  - c.active = true drops soft-deleted companies
+    #  - the company's live status is returned so callers can act on it
     user = await database.fetch_one(
-        """SELECT id, company_id, name, email, role, active,
-                  is_super_admin, expo_push_token, device_id
-           FROM employees WHERE id = :id AND active = true""",
+        """SELECT e.id, e.company_id, e.name, e.email, e.role, e.active,
+                  e.is_super_admin, e.expo_push_token, e.device_id,
+                  c.status AS company_status
+           FROM employees e
+           JOIN companies c ON e.company_id = c.id
+           WHERE e.id = :id AND e.active = true AND c.active = true""",
         {"id": user_id}
     )
     if user is None:
         raise credentials_exception
+
+    # ─── Defense-in-depth: suspending/cancelling a company must cut API
+    # access IMMEDIATELY, not when the (up to 24h) JWT expires. Without
+    # this, a suspended company kept full service for the token's lifetime.
+    # Platform super-admins keep access to manage the SaaS panel.
+    if not user["is_super_admin"] and user.get("company_status") in ("suspended", "cancelled"):
+        if user["company_status"] == "suspended":
+            raise HTTPException(
+                status_code=403,
+                detail="Cuenta suspendida. Contacta a soporte para reactivar."
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="Cuenta cancelada. Tus datos están disponibles por 30 días."
+        )
+
     return dict(user)
 
 def get_company_id(user: dict) -> str:

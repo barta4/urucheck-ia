@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     # --- GPS / Attendance ---
     # Reject check-ins with GPS accuracy worse than this value (meters)
     MAX_GPS_ACCURACY_METERS: float = 150.0
-    # Push reminder N minutes before break end (window: N to N+5 min)
+    # Push reminder N minutes after break start (window: N to N+10 min,
+    # deduped so the employee is never notified twice for the same break)
     BREAK_REMINDER_WINDOW_START: int = 55
 
     # --- Face verification ---
@@ -62,9 +63,11 @@ settings = Settings()
 # ─── Post-init: validate SECRET_KEY ──────────────────────────────────────────
 if settings.SECRET_KEY in _INSECURE_SECRET_KEYS:
     _generated = secrets.token_urlsafe(32)
-    _logger.warning(
+    _logger.critical(
         "⚠️  SECRET_KEY no configurada o usa un valor inseguro conocido. "
-        "Se generó una clave temporal aleatoria. Los tokens JWT NO sobrevivirán "
-        "reinicios del servidor. Defina SECRET_KEY en sus variables de entorno."
+        "Se generó una clave TEMPORAL aleatoria: los tokens JWT NO sobrevivirán "
+        "reinicios del servidor y los secretos cifrados con la clave anterior "
+        "(p. ej. contraseñas SMTP) quedarán indecidifrables. Defina SECRET_KEY "
+        "en sus variables de entorno con un valor aleatorio (openssl rand -hex 32)."
     )
     settings.SECRET_KEY = _generated

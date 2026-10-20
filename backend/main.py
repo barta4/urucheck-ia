@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from contextlib import asynccontextmanager
 from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from jose import jwt
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 
 from database import database
 from config import settings
-from auth import get_password_hash
+from auth import get_password_hash, get_current_user
 from routers import (
     auth, attendance, employees, dashboard, company, chat,
     privacy, data_rights, companies, plans, subscriptions,
@@ -36,8 +37,10 @@ async def lifespan(app: FastAPI):
     # ─── 0. Ensure pgcrypto extension exists ───
     try:
         await database.execute("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\"")
-    except Exception:
-        pass
+    except Exception as e:
+        # gen_random_uuid() depends on this extension — a silent failure here
+        # would break every INSERT with default UUIDs.
+        logger.critical("[Lifespan] No se pudo crear la extensión pgcrypto: %s", e)
 
     # ─── 1. Create new tables if upgrading from older version ───
     create_tables = [
@@ -227,51 +230,66 @@ async def lifespan(app: FastAPI):
 
     # ─── Seed admin company (parameterized — no f-string interpolation) ───
     if settings.SEED_ADMIN_PASSWORD:
-        seed_email = settings.SUPER_ADMIN_EMAIL
-        seed_hash = get_password_hash(settings.SEED_ADMIN_PASSWORD)
-        seed_queries = [
-            (
-                "INSERT INTO companies (plan_id, name, slug, admin_email, admin_password_hash, status, trial_ends_at) "
-                "SELECT (SELECT id FROM plans WHERE slug = 'free'), 'Mi Empresa', 'mi-empresa', :email, :hash, "
-                "'active', NOW() + INTERVAL '14 days' "
-                "WHERE NOT EXISTS (SELECT 1 FROM companies WHERE slug = 'mi-empresa')",
-                {"email": seed_email, "hash": seed_hash},
-            ),
-            (
-                "INSERT INTO company_config (company_id, company_name) "
-                "SELECT id, 'Mi Empresa' FROM companies WHERE slug = 'mi-empresa' "
-                "AND NOT EXISTS (SELECT 1 FROM company_config WHERE company_id = "
-                "(SELECT id FROM companies WHERE slug = 'mi-empresa'))",
-                None,
-            ),
-            (
-                "INSERT INTO employees (company_id, name, email, password_hash, role) "
-                "SELECT id, 'Administrador', :email, :hash, 'admin' "
-                "FROM companies WHERE slug = 'mi-empresa' "
-                "AND NOT EXISTS (SELECT 1 FROM employees WHERE email = :email)",
-                {"email": seed_email, "hash": seed_hash},
-            ),
-            (
-                "INSERT INTO subscriptions (company_id, plan_id, status, trial_start, trial_end) "
-                "SELECT c.id, c.plan_id, 'trial', NOW(), c.trial_ends_at "
-                "FROM companies c WHERE c.slug = 'mi-empresa' "
-                "AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE company_id = c.id)",
-                None,
-            ),
-        ]
-        for sql, params in seed_queries:
-            try:
-                if params:
-                    await database.execute(sql, params)
-                else:
-                    await database.execute(sql)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "already exists" not in err_str and "duplicate" not in err_str:
-                    logger.error("[Lifespan] Fallo al sembrar datos de admin: %s", e)
+        from schemas import validate_password_complexity
+        try:
+            # Refuse known-weak seed passwords — a fresh deployment must never
+            # end up with publicly-known admin credentials.
+            validate_password_complexity(settings.SEED_ADMIN_PASSWORD)
+        except ValueError as ve:
+            logger.error(
+                "[Lifespan] SEED_ADMIN_PASSWORD rechazada por no cumplir la política "
+                "de complejidad (%s). La empresa demo NO fue creada. Define una "
+                "clave segura en tus variables de entorno.", ve
+            )
+        else:
+            seed_email = settings.SUPER_ADMIN_EMAIL
+            seed_hash = get_password_hash(settings.SEED_ADMIN_PASSWORD)
+            seed_queries = [
+                (
+                    "INSERT INTO companies (plan_id, name, slug, admin_email, admin_password_hash, status, trial_ends_at) "
+                    "SELECT (SELECT id FROM plans WHERE slug = 'free'), 'Mi Empresa', 'mi-empresa', :email, :hash, "
+                    "'active', NOW() + INTERVAL '14 days' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM companies WHERE slug = 'mi-empresa')",
+                    {"email": seed_email, "hash": seed_hash},
+                ),
+                (
+                    "INSERT INTO company_config (company_id, company_name) "
+                    "SELECT id, 'Mi Empresa' FROM companies WHERE slug = 'mi-empresa' "
+                    "AND NOT EXISTS (SELECT 1 FROM company_config WHERE company_id = "
+                    "(SELECT id FROM companies WHERE slug = 'mi-empresa'))",
+                    None,
+                ),
+                (
+                    "INSERT INTO employees (company_id, name, email, password_hash, role) "
+                    "SELECT id, 'Administrador', :email, :hash, 'admin' "
+                    "FROM companies WHERE slug = 'mi-empresa' "
+                    "AND NOT EXISTS (SELECT 1 FROM employees WHERE email = :email)",
+                    {"email": seed_email, "hash": seed_hash},
+                ),
+                (
+                    "INSERT INTO subscriptions (company_id, plan_id, status, trial_start, trial_end) "
+                    "SELECT c.id, c.plan_id, 'trial', NOW(), c.trial_ends_at "
+                    "FROM companies c WHERE c.slug = 'mi-empresa' "
+                    "AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE company_id = c.id)",
+                    None,
+                ),
+            ]
+            for sql, params in seed_queries:
+                try:
+                    if params:
+                        await database.execute(sql, params)
+                    else:
+                        await database.execute(sql)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "already exists" not in err_str and "duplicate" not in err_str:
+                        logger.error("[Lifespan] Fallo al sembrar datos de admin: %s", e)
 
     # NOTE: Admin password is seeded only once during initial company creation.
-    # Do NOT reset it here on every startup — that would overwrite ad    # ─── 2. Add missing columns (for upgrades) ───
+    # Do NOT reset it here on every startup — that would overwrite admin-changed
+    # passwords.
+
+    # ─── 2. Add missing columns (for upgrades) ───
     migrations = [
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS webhook_url VARCHAR(255);",
         "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS bonus_success_message VARCHAR(255) DEFAULT '¡Bonus asegurado!';",
@@ -341,6 +359,23 @@ async def lifespan(app: FastAPI):
         "CREATE INDEX IF NOT EXISTS idx_emp_loc_rep_emp ON employee_location_reports(employee_id, created_at DESC);",
         "CREATE TABLE IF NOT EXISTS revoked_tokens (jti VARCHAR(64) PRIMARY KEY, expires_at TIMESTAMP WITH TIME ZONE);",
         "CREATE INDEX IF NOT EXISTS idx_revoked_tokens_exp ON revoked_tokens(expires_at);",
+        # Offline-sync flag: marks whose device timestamp was replaced by the
+        # server time (too-delayed sync or clock manipulation)
+        "ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS synced_late BOOLEAN DEFAULT false;",
+        # Push dedup registry: guarantees ONE reminder per (kind, dedup_key)
+        # even when scheduler windows overlap multiple cron ticks
+        """CREATE TABLE IF NOT EXISTS push_notifications_log (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            employee_id UUID,
+            kind VARCHAR(50) NOT NULL,
+            dedup_key VARCHAR(200) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT NOW()
+        );""",
+        # Per-company HMAC secret used to sign outbound webhooks so the
+        # receiver can verify events really come from the platform
+        "ALTER TABLE company_config ADD COLUMN IF NOT EXISTS webhook_secret VARCHAR(128);",
+        # Idempotency for MercadoPago webhooks: one payment row per MP payment id
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_mp_id_unique ON payments(mercado_pago_id) WHERE mercado_pago_id IS NOT NULL;",
         # NOTE: super_admin flag is set via parameterized query below (not in this list).
         # ─── Performance indexes (idempotent) ───
         "CREATE INDEX IF NOT EXISTS idx_al_cid_eid ON attendance_logs(company_id, employee_id);",
@@ -390,13 +425,18 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Without the middleware, default_limits never apply to any route
+app.add_middleware(SlowAPIMiddleware)
 
 cors_origins = set()
 for raw_origin in settings.FRONTEND_URL.split(","):
     cleaned = raw_origin.strip().rstrip("/")
     if cleaned:
         cors_origins.add(cleaned)
-cors_origins.update(["http://localhost:3000", "http://localhost:5173", "http://localhost", "http://127.0.0.1:5173", "http://127.0.0.1:3000"])
+# Local development origins are ONLY allowed when DEBUG is enabled —
+# never expose localhost origins (with credentials) in production.
+if settings.DEBUG:
+    cors_origins.update(["http://localhost:3000", "http://localhost:5173", "http://localhost", "http://127.0.0.1:5173", "http://127.0.0.1:3000"])
 
 app.add_middleware(
     CORSMiddleware,
@@ -515,69 +555,68 @@ app.include_router(leaves.router)
 app.include_router(locations.router)
 
 # Serve photos — protected against path traversal
-@app.get("/api/photos/{filename}")
-async def get_photo(filename: str, request: Request, token: str = None) -> FileResponse:
-    """Authenticated photo serving with strict path traversal protection."""
-    extracted_token = None
-    if token:
-        extracted_token = token
-    else:
-        authorization = request.headers.get("authorization")
-        if authorization and authorization.startswith("Bearer "):
-            extracted_token = authorization.replace("Bearer ", "")
+@app.get("/api/photos/{file_path:path}")
+async def get_photo(file_path: str, current_user=Depends(get_current_user)) -> FileResponse:
+    """Authenticated photo serving with strict path traversal protection.
 
-    if not extracted_token:
-        raise HTTPException(status_code=401, detail="No autorizado")
+    Accepts relative subpaths (e.g. `face_references/face_<cid>_...jpg`) so that
+    face reference photos stored in subdirectories remain servable.
+    Auth via the standard dependency (Authorization header / httpOnly cookie):
+    the tenant and super-admin decisions use FRESH database values — never
+    stale JWT claims — so deactivating a user or demoting a super-admin cuts
+    photo access immediately, consistent with every other endpoint.
+    """
+    filename = file_path.strip().strip("/")
 
-    try:
-        payload = jwt.decode(extracted_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id = payload.get("sub")
-        company_id = payload.get("company_id")
-        is_super_admin = payload.get("is_super_admin", False)
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Token inválido")
-            
-        # Security: Tenant isolation check
-        if not is_super_admin and company_id:
-            valid_prefixes = (
-                f"{company_id}_",
-                f"logo_{company_id}_",
-                f"face_{company_id}_",
-                f"cert_{company_id}_"
-            )
-            # Support subdirectory paths (e.g. "logos/logo_xxx")
-            basename = os.path.basename(filename)
-            if not basename.startswith(valid_prefixes):
-                raise HTTPException(status_code=403, detail="Acceso denegado a recursos de otra empresa")
-                
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    company_id = current_user.get("company_id")
+    is_super_admin = current_user.get("is_super_admin", False)
 
-    # Security: reject filenames with path separators or dot-traversal sequences
-    if "/" in filename or "\\" in filename or ".." in filename:
+    # Security: Tenant isolation check (fail-closed: a user without
+    # company_id only passes as super-admin)
+    if not is_super_admin:
+        if not company_id:
+            raise HTTPException(status_code=403, detail="Acceso denegado a recursos de otra empresa")
+        valid_prefixes = (
+            f"{company_id}_",
+            f"logo_{company_id}_",
+            f"face_{company_id}_",
+            f"cert_{company_id}_"
+        )
+        # Support subdirectory paths (e.g. "face_references/face_xxx")
+        basename = os.path.basename(filename)
+        if not basename.startswith(valid_prefixes):
+            raise HTTPException(status_code=403, detail="Acceso denegado a recursos de otra empresa")
+
+    # Security: reject dot-traversal sequences and backslashes in the relative path
+    if ".." in filename or "\\" in filename or "\x00" in filename:
         raise HTTPException(status_code=400, detail="Nombre de archivo inválido")
     path = os.path.realpath(os.path.join(settings.PHOTOS_PATH, filename))
     base = os.path.realpath(settings.PHOTOS_PATH)
     if not path.startswith(base + os.sep) and path != base:
         raise HTTPException(status_code=400, detail="Acceso denegado")
-    if not os.path.exists(path):
+    if not os.path.exists(path) or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Foto no encontrada")
     return FileResponse(path)
 
 
 @app.get("/api/health")
 async def health() -> dict:
-    """Public health-check endpoint with database probe."""
+    """Public health-check endpoint with database probe.
+
+    Returns 200 only when the database probe succeeds; 503 otherwise so
+    that orchestrator healthchecks (docker-compose / Dokploy) actually
+    catch DB outages instead of always passing.
+    """
     db_status = "ok"
     try:
         await database.fetch_one("SELECT 1")
     except Exception as e:
-        db_status = f"error: {str(e)}"
+        # Log the real error internally; never leak DB details in a public endpoint
+        logger.error("[Health] Fallo de conexión a la base de datos: %s", e)
+        db_status = "error"
 
     overall = "ok" if db_status == "ok" else "degraded"
-    return {
+    content = {
         "status": overall,
         "database": db_status,
         "service": "attendance-api",
@@ -585,3 +624,6 @@ async def health() -> dict:
         "build_version": "v2.17",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if overall != "ok":
+        return JSONResponse(status_code=503, content=content)
+    return content

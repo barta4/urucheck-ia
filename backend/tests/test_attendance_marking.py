@@ -156,3 +156,67 @@ async def test_get_today_logs_no_unbound_error():
         assert res["next_action"] == "check_in"
         assert res["streak"] == 0
 
+
+# ─── Timestamp policy: anti-forgery + offline queue support ──────────────────
+
+from datetime import timedelta
+from routers.attendance import _resolve_mark_timestamp
+
+
+@pytest.mark.anyio
+async def test_timestamp_within_skew_uses_device_time():
+    """|drift| <= 10 min → device time, no late flag."""
+    tz = ZoneInfo("America/Montevideo")
+    server_now = datetime.now(tz)
+    device = (server_now - timedelta(minutes=5)).isoformat()
+    ts, late = _resolve_mark_timestamp(device, tz)
+    assert late is False
+    # Device time honored (within a second of the expected device clock)
+    expected = (server_now - timedelta(minutes=5)).replace(tzinfo=None)
+    assert abs((ts - expected).total_seconds()) < 2
+
+
+@pytest.mark.anyio
+async def test_timestamp_past_drift_30min_uses_device_time():
+    """Past drift between 10 and 30 min (offline queue delay) → device time, no flag."""
+    tz = ZoneInfo("America/Montevideo")
+    server_now = datetime.now(tz)
+    device = (server_now - timedelta(minutes=25)).isoformat()
+    ts, late = _resolve_mark_timestamp(device, tz)
+    assert late is False
+    expected = (server_now - timedelta(minutes=25)).replace(tzinfo=None)
+    assert abs((ts - expected).total_seconds()) < 2
+
+
+@pytest.mark.anyio
+async def test_timestamp_far_past_uses_server_time_with_flag():
+    """Past drift > 30 min → SERVER time + late_synced (prevents backdating)."""
+    tz = ZoneInfo("America/Montevideo")
+    server_now = datetime.now(tz)
+    device = (server_now - timedelta(hours=2)).isoformat()
+    ts, late = _resolve_mark_timestamp(device, tz)
+    assert late is True
+    assert abs((ts - server_now.replace(tzinfo=None)).total_seconds()) < 2
+
+
+@pytest.mark.anyio
+async def test_timestamp_future_drift_uses_server_time_with_flag():
+    """Future drift > 10 min (clock manipulation) → SERVER time + late_synced."""
+    tz = ZoneInfo("America/Montevideo")
+    server_now = datetime.now(tz)
+    device = (server_now + timedelta(minutes=45)).isoformat()
+    ts, late = _resolve_mark_timestamp(device, tz)
+    assert late is True
+    assert abs((ts - server_now.replace(tzinfo=None)).total_seconds()) < 2
+
+
+@pytest.mark.anyio
+async def test_timestamp_invalid_falls_back_to_server():
+    """Unparseable device timestamp → server time, no crash."""
+    tz = ZoneInfo("America/Montevideo")
+    server_now = datetime.now(tz)
+    ts, late = _resolve_mark_timestamp("not-a-date", tz)
+    assert late is False
+    assert abs((ts - server_now.replace(tzinfo=None)).total_seconds()) < 2
+
+

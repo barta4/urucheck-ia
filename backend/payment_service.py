@@ -168,6 +168,20 @@ async def process_mp_payment_notification(mp_payment_id: str) -> bool:
         logger.warning(f"[MP Webhook] Pago {mp_payment_id} sin company_id en metadata — omitido")
         return False
 
+    # ── Idempotency: MercadoPago retries webhook deliveries, and the same
+    # payment id may be notified multiple times (also across the 600s replay
+    # window). Processing it twice would extend the subscription +30 days on
+    # every retry. A partial unique index on payments.mercado_pago_id
+    # (created in main.py migrations) is the final backstop against
+    # concurrent duplicates.
+    existing = await database.fetch_one(
+        "SELECT id FROM payments WHERE mercado_pago_id = :mp_id",
+        {"mp_id": mp_payment_id}
+    )
+    if existing:
+        logger.info(f"[MP Webhook] Pago {mp_payment_id} ya procesado anteriormente — ignorado (idempotencia)")
+        return True
+
     # Insert payment record
     await database.execute(
         """

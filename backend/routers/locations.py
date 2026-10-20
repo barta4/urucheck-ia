@@ -31,6 +31,10 @@ async def request_employee_location(
     """
     company_id = admin["company_id"]
 
+    # Billing enforcement: suspended/cancelled companies lose this feature
+    from resource_limiter import check_company_active
+    await check_company_active(company_id)
+
     emp = await database.fetch_one(
         """
         SELECT id, name, expo_push_token, active
@@ -98,6 +102,10 @@ async def request_all_active_locations(
     que cuenten con token de dispositivo registrado.
     """
     company_id = admin["company_id"]
+
+    # Billing enforcement: suspended/cancelled companies lose this feature
+    from resource_limiter import check_company_active
+    await check_company_active(company_id)
 
     employees = await database.fetch_all(
         """

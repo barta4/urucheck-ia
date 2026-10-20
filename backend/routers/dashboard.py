@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import io
 import csv
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional, Tuple, List, Dict, Any
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from auth import get_current_admin
@@ -220,59 +221,64 @@ async def export_logs(
         params
     )
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Registros de Asistencia"
+    def _build_xlsx(rows_dicts):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Registros de Asistencia"
 
-    column_headers = ["Fecha/Hora", "Empleado", "Turno / Tramo", "Ubicación", "Tipo de Marca", "Estado", "Salida Anticipada (min)", "Latitud", "Longitud", "Racha"]
-    ws.append(column_headers)
+        column_headers = ["Fecha/Hora", "Empleado", "Turno / Tramo", "Ubicación", "Tipo de Marca", "Estado", "Salida Anticipada (min)", "Latitud", "Longitud", "Racha"]
+        ws.append(column_headers)
 
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-    for cell in ws[1]:
-        cell.font = header_font
-        cell.fill = header_fill
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
 
-    for row in rows:
-        row_dict = dict(row)
-        ts = row_dict.get("timestamp")
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts and hasattr(ts, "strftime") else str(ts or "")
-        emp_name = str(row_dict.get("employee_name") or "Desconocido")
-        slot_name = str(row_dict.get("slot_name") or "Turno Regular")
-        geo_name = str(row_dict.get("geofence_name") or "General")
-        raw_type = str(row_dict.get("type") or "")
-        type_str = raw_type.replace("_", " ").title() if raw_type else "Desconocido"
-        raw_status = str(row_dict.get("status") or "")
-        status_str = raw_status.title() if raw_status else ""
-        early_mins = row_dict.get("early_minutes") or 0
-        lat = str(row_dict.get("latitude") or "")
-        lng = str(row_dict.get("longitude") or "")
-        streak = row_dict.get("streak_day") or 0
+        for row_dict in rows_dicts:
+            ts = row_dict.get("timestamp")
+            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts and hasattr(ts, "strftime") else str(ts or "")
+            emp_name = str(row_dict.get("employee_name") or "Desconocido")
+            slot_name = str(row_dict.get("slot_name") or "Turno Regular")
+            geo_name = str(row_dict.get("geofence_name") or "General")
+            raw_type = str(row_dict.get("type") or "")
+            type_str = raw_type.replace("_", " ").title() if raw_type else "Desconocido"
+            raw_status = str(row_dict.get("status") or "")
+            status_str = raw_status.title() if raw_status else ""
+            early_mins = row_dict.get("early_minutes") or 0
+            lat = str(row_dict.get("latitude") or "")
+            lng = str(row_dict.get("longitude") or "")
+            streak = row_dict.get("streak_day") or 0
 
-        ws.append([
-            ts_str,
-            emp_name,
-            slot_name,
-            geo_name,
-            type_str,
-            status_str,
-            early_mins,
-            lat,
-            lng,
-            streak
-        ])
+            ws.append([
+                ts_str,
+                emp_name,
+                slot_name,
+                geo_name,
+                type_str,
+                status_str,
+                early_mins,
+                lat,
+                lng,
+                streak
+            ])
 
-    for col in ws.columns:
-        max_length = 0
-        col_letter = col[0].column_letter
-        for cell in col:
-            if cell.value:
-                max_length = max(max_length, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = max(max_length + 2, 12)
+        for col in ws.columns:
+            max_length = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max(max_length + 2, 12)
 
-    stream = io.BytesIO()
-    wb.save(stream)
-    stream.seek(0)
+        stream = io.BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+        return stream
+
+    # openpyxl is CPU-bound — build the workbook in a worker thread so the
+    # event loop is not blocked for every other user during large exports.
+    stream = await asyncio.to_thread(_build_xlsx, [dict(r) for r in rows])
 
     filename = f"Registros_Asistencia_{datetime.now(ZoneInfo(settings.TIMEZONE)).strftime('%Y%m%d_%H%M%S')}.xlsx"
     headers = {'Content-Disposition': f'attachment; filename="{filename}"'}
@@ -286,8 +292,9 @@ async def get_logs(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    response: Response = None,
     admin=Depends(get_current_admin),
 ):
     d_from, d_to = _resolve_date_range(date_from, date_to, default_to_last_month=True)
@@ -295,6 +302,19 @@ async def get_logs(
     params = {"cid": company_id, "limit": limit, "offset": offset}
     conditions = _build_log_filters(params, employee_id, d_from, d_to, status)
     where = " AND ".join(conditions)
+
+    # Total count for pagination UI (same filters, no LIMIT/OFFSET)
+    count_row = await database.fetch_one(
+        f"""
+        SELECT COUNT(*) as total
+        FROM attendance_logs al
+        JOIN employees e ON al.employee_id = e.id
+        WHERE {where}
+        """,
+        params
+    )
+    total = count_row["total"] if count_row else 0
+
     rows = await database.fetch_all(
         f"""
         SELECT al.*, e.name as employee_name, s.slot_name, g.name as geofence_name
@@ -308,6 +328,8 @@ async def get_logs(
         """,
         params
     )
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total)
     return [dict(r) for r in rows]
 
 @router.get("/bonus-report")
@@ -414,7 +436,9 @@ async def export_bonus_report_pdf(
     ]
 
     from pdf_service import generate_attendance_pdf
-    pdf_bytes = generate_attendance_pdf(
+    # reportlab PDF generation is CPU-bound — run it in a worker thread.
+    pdf_bytes = await asyncio.to_thread(
+        generate_attendance_pdf,
         company_name=company_name,
         month_str=month,
         report_data=formatted_list,

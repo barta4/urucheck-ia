@@ -173,9 +173,13 @@ async def _detect_face_gemini(image_path: str) -> bool:
     """
     Use Gemini Vision to check if an image contains a clear human face.
     Used when validating reference photos in employee registration.
+    Fails CLOSED: if the provider is unavailable or errors out, the image is
+    rejected — registering an invalid biometric reference is worse than
+    forcing the admin to retry.
     """
     if not _gemini_available or not settings.GEMINI_API_KEY:
-        return True  # Fallback gracefully if API not ready
+        logger.warning("[face_service] Gemini no disponible para validar foto de referencia — rechazando (fail-closed).")
+        return False
 
     img = _load_and_normalize_image(image_path)
     if img is None:
@@ -198,10 +202,10 @@ async def _detect_face_gemini(image_path: str) -> bool:
             timeout=5.0
         )
         data = _parse_gemini_json_response(response.text)
-        return bool(data.get("has_face", True))
+        return bool(data.get("has_face", False))
     except Exception as e:
-        logger.warning("[face_service] Error en _detect_face_gemini: %s. Aceptando imagen por fallback.", e)
-        return True
+        logger.warning("[face_service] Error en _detect_face_gemini: %s. Rechazando imagen (fail-closed).", e)
+        return False
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
@@ -230,7 +234,11 @@ async def verify_face(
 
     # 1. Local provider (face_recognition / dlib)
     if provider == "face_recognition" and _face_recognition_available:
-        is_match, distance = _verify_local(selfie_path, reference_path, threshold)
+        # dlib encoding is CPU-heavy (seconds) — run it in a worker thread so
+        # the event loop (and every other user) is not blocked.
+        is_match, distance = await asyncio.to_thread(
+            _verify_local, selfie_path, reference_path, threshold
+        )
         if distance < 0:
             return {
                 "verified": False,
@@ -283,15 +291,27 @@ async def verify_face(
 
 
 async def has_face_reference(reference_path: str, provider: str = "face_recognition") -> bool:
-    """Check if the reference image contains a detectable face."""
+    """
+    Check if the reference image contains a detectable face.
+    Fails CLOSED when the configured provider is unavailable: an invalid
+    reference must never be registered, or every future mark of that employee
+    would fail.
+    """
     if not reference_path or not os.path.exists(reference_path):
         return False
 
-    if provider == "face_recognition" and _face_recognition_available:
-        enc = _encode_face_local(reference_path)
-        return enc is not None
+    if provider == "face_recognition":
+        if _face_recognition_available:
+            return await asyncio.to_thread(lambda: _encode_face_local(reference_path) is not None)
+        # Fall back to Gemini validation when dlib is not installed (mirrors
+        # verify_face's provider fallback).
+        if _gemini_available and settings.GEMINI_API_KEY:
+            return await _detect_face_gemini(reference_path)
+        logger.warning("[face_service] Ningún proveedor disponible para validar la foto de referencia — rechazando (fail-closed).")
+        return False
 
     if provider == "gemini_vision":
         return await _detect_face_gemini(reference_path)
 
-    return True
+    logger.warning("[face_service] Proveedor de verificación facial desconocido: %s — rechazando.", provider)
+    return False

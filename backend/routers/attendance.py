@@ -2,7 +2,7 @@ import logging
 import os
 import uuid
 import math
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from typing import Optional
@@ -15,6 +15,74 @@ from agent_controller import notify_checkin, notify_checkout, notify_break, noti
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
+
+# Maximum accepted clock drift between client device and server (minutes)
+MAX_DEVICE_CLOCK_DRIFT_MINUTES = 10
+# Maximum accepted PAST drift (offline queue delay) before falling back to
+# server time with the late_synced flag (minutes)
+MAX_PAST_DRIFT_MINUTES = 30
+# Maximum photo upload size (bytes)
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+async def _read_upload_limited(upload: UploadFile, max_bytes: int = MAX_PHOTO_BYTES) -> bytes:
+    """
+    Read an upload in chunks, aborting as soon as the size limit is exceeded.
+    Prevents a single oversized request from exhausting server memory.
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 512)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="La imagen excede el tamaño máximo permitido (10 MB)."
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _resolve_mark_timestamp(device_timestamp: Optional[str], tz) -> tuple:
+    """
+    Resolve the authoritative timestamp for a mark.
+    Returns (timestamp, late_synced).
+
+    Anti-forgery + offline-queue policy:
+      - |drift| <= MAX_DEVICE_CLOCK_DRIFT_MINUTES (either direction):
+        normal clock skew → trust the device time.
+      - Device time in the PAST by up to MAX_PAST_DRIFT_MINUTES:
+        typical offline-queue delay → trust the device time (the mark keeps
+        the real time at which it was made).
+      - Anything beyond that (far past or any future drift beyond the
+        tolerance): manipulation or a very late offline sync → use SERVER
+        time and flag late_synced=True so the response/DB record it for
+        admin review (the employee cannot backdate punctuality).
+    """
+    server_now = datetime.now(tz)
+    fallback = (server_now.replace(tzinfo=None), False)
+    if not device_timestamp:
+        return fallback
+    try:
+        dt_aware = datetime.fromisoformat(device_timestamp.replace("Z", "+00:00"))
+        local_dt = dt_aware.astimezone(tz)
+        past_drift = server_now - local_dt  # >0 → device is behind the server
+        if abs(past_drift) <= timedelta(minutes=MAX_DEVICE_CLOCK_DRIFT_MINUTES):
+            return local_dt.replace(tzinfo=None), False
+        if timedelta(0) <= past_drift <= timedelta(minutes=MAX_PAST_DRIFT_MINUTES):
+            # Offline-queue style delay: keep the device (real) time
+            return local_dt.replace(tzinfo=None), False
+        logger.warning(
+            "[attendance] device_timestamp sustituido por hora del servidor (desvío %s, futuro=%s): %s",
+            abs(past_drift), past_drift < timedelta(0), device_timestamp
+        )
+        return server_now.replace(tzinfo=None), True
+    except Exception:
+        logger.warning("[attendance] Device timestamp parse failed: %s", device_timestamp)
+        return fallback
 
 
 async def _check_face_verification_required(employee_id: str, company_id: str) -> tuple:
@@ -30,7 +98,7 @@ async def _check_face_verification_required(employee_id: str, company_id: str) -
             {"cid": company_id}
         )
     except Exception as e:
-        print(f"[Attendance Router Error] Fallo al recuperar configuración de verificación facial: {e}")
+        logger.error("[Attendance Router] Fallo al recuperar configuración de verificación facial: %s", e)
         config = None
 
     if not config or not config.get("face_verification_enabled", False):
@@ -131,26 +199,13 @@ async def mark_attendance(
         )
 
     tz = ZoneInfo(settings.TIMEZONE)
-    try:
-        if device_timestamp:
-            dt_aware = datetime.fromisoformat(device_timestamp.replace("Z", "+00:00"))
-            timestamp = dt_aware.astimezone(tz).replace(tzinfo=None)
-        else:
-            timestamp = datetime.now(tz).replace(tzinfo=None)
-    except Exception:
-        logger.warning("[attendance] Device timestamp parse failed: %s", device_timestamp)
-        timestamp = datetime.now(tz).replace(tzinfo=None)
+    timestamp, late_synced = _resolve_mark_timestamp(device_timestamp, tz)
 
-    mark_type = await get_next_mark_type(employee_id, company_id, current_dt=timestamp)
-    if mark_type == "already_completed":
-        return AttendanceResponse(
-            status="warning",
-            alert_type="yellow",
-            title="Jornada completa",
-            message="Ya has completado todos los registros del día."
-        )
-
+    # Best-effort schedule lookup for the geofence check (no lock held here).
+    # The authoritative mark_type is recomputed atomically inside the
+    # transaction right before the INSERT.
     schedule = await get_employee_schedule(employee_id, company_id, timestamp.weekday(), current_time=timestamp.time())
+
     geofence_id = schedule.get("geofence_id") if schedule else None
 
     # If the active schedule explicitly has no geofence restriction, all locations are permitted
@@ -162,11 +217,16 @@ async def mark_attendance(
         gf_name = "el lugar de trabajo asignado"
         if geofence_id:
             try:
-                gf_row = await database.fetch_one("SELECT name FROM geofences WHERE id = :gid", {"gid": geofence_id})
+                # Defense-in-depth: filter by tenant even though geofence_id
+                # comes from a company-scoped schedule row
+                gf_row = await database.fetch_one(
+                    "SELECT name FROM geofences WHERE id = :gid AND company_id = :cid",
+                    {"gid": geofence_id, "cid": company_id}
+                )
                 if gf_row:
                     gf_name = f"'{gf_row['name']}'"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[attendance] Fallo al recuperar nombre de geocerca: %s", e)
         slot_label = f" ({schedule.get('slot_name')})" if schedule and schedule.get('slot_name') else ""
         return AttendanceResponse(
             status="warning",
@@ -181,12 +241,8 @@ async def mark_attendance(
         ext = photo.filename.split(".")[-1].lower() if photo.filename else "jpg"
         if ext not in ("png", "jpg", "jpeg", "webp"):
             raise HTTPException(status_code=400, detail="Formato de imagen no permitido. Use PNG, JPG o WebP.")
-        content = await photo.read()
-        if len(content) > 10 * 1024 * 1024:  # 10 MB limit (H8)
-            raise HTTPException(
-                status_code=413,
-                detail="La imagen excede el tamaño máximo permitido (10 MB)."
-            )
+        # Chunked read — rejects oversized uploads before buffering them in RAM
+        content = await _read_upload_limited(photo, MAX_PHOTO_BYTES)
         filename = f"{company_id}_{employee_id}_{uuid.uuid4().hex}.{ext}"
         photo_path = os.path.join(settings.PHOTOS_PATH, filename)
         try:
@@ -194,12 +250,11 @@ async def mark_attendance(
             with open(photo_path, "wb") as f:
                 f.write(content)
         except (PermissionError, OSError) as perm_err:
-            logger.warning("[attendance] Permiso denegado en %s: %s. Guardando en /tmp/photos", settings.PHOTOS_PATH, perm_err)
-            fallback_dir = "/tmp/photos"
-            os.makedirs(fallback_dir, exist_ok=True)
-            photo_path = os.path.join(fallback_dir, filename)
-            with open(photo_path, "wb") as f:
-                f.write(content)
+            # Fail gracefully: photo is optional evidence. If face verification
+            # is required, the check below rejects the mark because photo_path
+            # stays None (fail-closed).
+            logger.error("[attendance] No se pudo guardar la foto en %s: %s. La marcación continúa sin foto.", settings.PHOTOS_PATH, perm_err)
+            photo_path = None
 
     face_required, face_provider, face_error = await _check_face_verification_required(employee_id, company_id)
     face_verified = None
@@ -213,6 +268,17 @@ async def mark_attendance(
             alert_type="yellow",
             title="Verificación facial requerida",
             message=face_error,
+            face_verified=False
+        )
+
+    # SECURITY: if the company requires face verification, the selfie photo is
+    # MANDATORY. Omitting the file must never bypass the biometric check.
+    if face_required and not photo_path:
+        return AttendanceResponse(
+            status="warning",
+            alert_type="red",
+            title="Verificación facial requerida",
+            message="Debes capturar y enviar una selfie para verificar tu identidad. Inténtalo nuevamente con la cámara activada.",
             face_verified=False
         )
 
@@ -246,38 +312,73 @@ async def mark_attendance(
                     face_confidence=face_confidence
                 )
 
-    feedback = await evaluate_mark(employee_id, company_id, mark_type, timestamp)
-    sched_id = str(schedule["id"]) if schedule and "id" in schedule else None
+    # ── Atomic evaluation + insert (advisory lock held for the whole
+    # sequence): prevents duplicate marks and lost streak updates under
+    # concurrent requests from the same employee.
+    async with database.transaction():
+        await database.fetch_one(
+            "SELECT pg_advisory_xact_lock(hashtext(:lock_key))",
+            {"lock_key": f"attendance_mark:{employee_id}"}
+        )
+        mark_type = await get_next_mark_type(employee_id, company_id, current_dt=timestamp)
+        if mark_type == "already_completed":
+            # Remove the already-saved photo so it does not become an orphan
+            if photo_path and os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except OSError:
+                    pass
+            return AttendanceResponse(
+                status="warning",
+                alert_type="yellow",
+                title="Jornada completa",
+                message="Ya has completado todos los registros del día."
+            )
+        feedback = await evaluate_mark(employee_id, company_id, mark_type, timestamp)
+        sched_id = str(schedule["id"]) if schedule and "id" in schedule else None
 
-    try:
-        log_id = await database.execute(
-            """
-            INSERT INTO attendance_logs
-            (company_id, employee_id, schedule_id, type, timestamp, latitude, longitude, gps_accuracy, photo_path, status, early_minutes, streak_day)
-            VALUES (:cid, :eid, :sched_id, :type, :ts, :lat, :lng, :acc, :photo, :status, :early_min, :streak)
-            RETURNING id
-            """,
-            {
-                "cid": company_id,
-                "eid": employee_id,
-                "sched_id": sched_id,
-                "type": mark_type,
-                "ts": timestamp,
-                "lat": lat_val,
-                "lng": lng_val,
-                "acc": acc_val,
-                "photo": photo_path,
-                "status": feedback["status"],
-                "early_min": feedback.get("early_minutes", 0),
-                "streak": feedback.get("streak") or 0
-            }
-        )
-    except Exception as db_err:
-        logger.error("[attendance] Fallo al insertar registro de asistencia en BD: %s", db_err, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al registrar la marcación en base de datos: {str(db_err)}"
-        )
+        # Late-sync annotation: the device timestamp was not trusted and the
+        # mark was registered with the server time (offline sync too delayed
+        # or clock manipulation). Surface it to the employee and store it.
+        if late_synced:
+            feedback["late_synced"] = True
+            feedback["alert_type"] = "yellow" if feedback.get("alert_type") != "red" else "red"
+            feedback["title"] = f"{feedback.get('title', 'Marcación')} — sync tardío"
+            feedback["message"] = (
+                (feedback.get("message") or "")
+                + " La hora de tu dispositivo no era confiable; se registró con la hora del servidor."
+            )
+
+        try:
+            log_id = await database.execute(
+                """
+                INSERT INTO attendance_logs
+                (company_id, employee_id, schedule_id, type, timestamp, latitude, longitude, gps_accuracy, photo_path, status, early_minutes, streak_day, synced_late)
+                VALUES (:cid, :eid, :sched_id, :type, :ts, :lat, :lng, :acc, :photo, :status, :early_min, :streak, :late_sync)
+                RETURNING id
+                """,
+                {
+                    "cid": company_id,
+                    "eid": employee_id,
+                    "sched_id": sched_id,
+                    "type": mark_type,
+                    "ts": timestamp,
+                    "lat": lat_val,
+                    "lng": lng_val,
+                    "acc": acc_val,
+                    "photo": photo_path,
+                    "status": feedback["status"],
+                    "early_min": feedback.get("early_minutes", 0),
+                    "streak": feedback.get("streak") or 0,
+                    "late_sync": late_synced,
+                }
+            )
+        except Exception as db_err:
+            logger.error("[attendance] Fallo al insertar registro de asistencia en BD: %s", db_err, exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al registrar la marcación en base de datos: {str(db_err)}"
+            )
 
     try:
         ts_str = timestamp.strftime("%H:%M")
@@ -333,13 +434,13 @@ async def get_today_logs(current_user=Depends(get_current_user)):
     if active_sched and active_sched.get("geofence_id"):
         try:
             gf = await database.fetch_one(
-                "SELECT name FROM geofences WHERE id = :gid",
-                {"gid": active_sched["geofence_id"]},
+                "SELECT name FROM geofences WHERE id = :gid AND company_id = :cid",
+                {"gid": active_sched["geofence_id"], "cid": company_id},
             )
             if gf:
                 geofence_name = gf["name"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[attendance] Fallo al recuperar nombre de geocerca activa: %s", e)
 
     streak_row = await database.fetch_one(
         "SELECT current_streak FROM streaks WHERE employee_id = :eid AND company_id = :cid",

@@ -1,17 +1,18 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from schemas import LoginRequest, TokenResponse
-from auth import verify_password, create_access_token, oauth2_scheme, revoke_token
+from auth import verify_password, create_access_token, oauth2_scheme, revoke_token, set_auth_cookie, clear_auth_cookie
 from database import database
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from typing import Optional
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 limiter = Limiter(key_func=get_remote_address)
 
 @router.post("/login")
 @limiter.limit("20/minute")
-async def login(request: Request, data: LoginRequest):
+async def login(request: Request, data: LoginRequest, response: Response):
     clean_email = data.email.strip() if data.email else ""
     
     # Fetch all active accounts with this email to check for multi-tenant duplicate emails
@@ -65,6 +66,11 @@ async def login(request: Request, data: LoginRequest):
 
     if data.device_id and user_dict["role"] != "admin": # Allow admins to login from anywhere if desired, or maybe apply to everyone. The prompt said "empleado". Usually admins can use web. But the web doesn't send device_id.
         # Actually, let's just apply it if device_id is sent. Web login won't send it.
+        if len(data.device_id) > 255:
+            raise HTTPException(
+                status_code=422,
+                detail="Identificador de dispositivo inválido (máximo 255 caracteres)."
+            )
         stored_device_id = user_dict.get("device_id")
         if not stored_device_id:
             await database.execute(
@@ -85,6 +91,10 @@ async def login(request: Request, data: LoginRequest):
     }
     token = create_access_token(token_data)
 
+    # Browser session: httpOnly cookie (immune to XSS token theft).
+    # The token is ALSO returned in the body for the mobile app (Bearer).
+    set_auth_cookie(response, token)
+
     return TokenResponse(
         access_token=token,
         user_id=str(user_dict["id"]),
@@ -99,9 +109,14 @@ async def login(request: Request, data: LoginRequest):
 
 
 @router.post("/logout")
-async def logout(token: str = Depends(oauth2_scheme)):
+async def logout(response: Response, token: Optional[str] = Depends(oauth2_scheme)):
     """
     Revokes the current JWT access token so it cannot be used again.
+    Accepts the token from the Authorization header (mobile) or the httpOnly
+    cookie (web), and always clears the cookie.
     """
-    revoked = await revoke_token(token)
+    revoked = False
+    if token:
+        revoked = await revoke_token(token)
+    clear_auth_cookie(response)
     return {"status": "ok", "message": "Sesión cerrada correctamente", "revoked": revoked}

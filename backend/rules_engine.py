@@ -249,13 +249,13 @@ async def evaluate_mark(
     if schedule and schedule.get("geofence_id"):
         try:
             gf = await database.fetch_one(
-                "SELECT name FROM geofences WHERE id = :gid",
-                {"gid": schedule["geofence_id"]},
+                "SELECT name FROM geofences WHERE id = :gid AND company_id = :cid",
+                {"gid": schedule["geofence_id"], "cid": company_id},
             )
             if gf:
                 geofence_name = gf["name"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[rules_engine] Fallo al recuperar nombre de geocerca: %s", e)
 
     slot_name = (schedule.get("slot_name") if schedule else None) or "Turno Regular"
 

@@ -6,9 +6,15 @@ from crypto import decrypt_secret
 
 logger = logging.getLogger("email_service")
 
+
 def send_smtp_email(config: dict, subject: str, html_content: str, text_content: str = ""):
     """
     Sends an email using the company's configured SMTP server details in `config`.
+
+    TLS policy: if the server does not OFFER STARTTLS (SMTPNotSupportedError)
+    the send continues with a warning (legacy internal relays); but if the
+    STARTTLS handshake FAILS mid-way, the send is ABORTED — the SMTP
+    credentials must never travel over a plaintext connection.
     """
     smtp_host = config.get("smtp_host")
     smtp_port = config.get("smtp_port") or 587
@@ -28,6 +34,7 @@ def send_smtp_email(config: dict, subject: str, html_content: str, text_content:
         logger.warning("[SMTP] Destinatario de correo (smtp_to_email) no configurado. Omitiendo.")
         return False
 
+    server = None
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
@@ -49,14 +56,33 @@ def send_smtp_email(config: dict, subject: str, html_content: str, text_content:
             try:
                 server.starttls()
                 server.ehlo()
-            except Exception as e:
-                logger.warning(f"[SMTP] Advertencia de STARTTLS: {e}")
+            except smtplib.SMTPNotSupportedError:
+                # Server does not offer STARTTLS — the admin chose this server
+                # (typically an internal relay); continue with a loud warning.
+                logger.warning(
+                    "[SMTP] %s:%s no soporta STARTTLS. Enviando SIN cifrado — aceptable solo para relays internos.",
+                    smtp_host, port,
+                )
+            except Exception as tls_err:
+                # Handshake failed: abort instead of leaking credentials
+                logger.error(
+                    "[SMTP] Fallo el handshake STARTTLS con %s:%s (%s). Envío abortado para no exponer credenciales.",
+                    smtp_host, port, tls_err,
+                )
+                return False
 
         server.login(smtp_username, smtp_password)
         server.sendmail(from_addr, [to_addr], msg.as_string())
-        server.quit()
-        logger.info(f"[SMTP] Correo enviado exitosamente a {to_addr} bajo el asunto: '{subject}'")
+        logger.info("[SMTP] Correo enviado exitosamente a %s bajo el asunto: '%s'", to_addr, subject)
         return True
     except Exception as e:
-        logger.error(f"[SMTP Error] Fallo al enviar correo a {to_addr}: {e}")
+        logger.error("[SMTP Error] Fallo al enviar correo a %s: %s", to_addr, e)
         return False
+    finally:
+        # Always close the socket — previously an exception after connect()
+        # leaked the SMTP connection.
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                pass

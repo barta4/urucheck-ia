@@ -58,8 +58,13 @@ async def change_plan(
     current_user=Depends(get_current_admin)
 ):
     """
-    Change company's plan.
-    Validates compatibility and updates subscription.
+    Change company's plan (self-service).
+
+    SECURITY: company admins may only switch to FREE plans (price_monthly == 0).
+    Upgrading to a paid plan requires an actual payment via
+    POST /api/payments/create-preference (MercadoPago) or a super-admin
+    assignment via /api/companies/{id}/assign-plan. This prevents admins from
+    self-assigning paid plans (e.g. Enterprise) without paying.
     """
     company_id = current_user["company_id"]
 
@@ -67,6 +72,13 @@ async def change_plan(
     new_plan = await database.fetch_one("SELECT * FROM plans WHERE id = :pid AND active = true", {"pid": str(data.plan_id)})
     if not new_plan:
         raise HTTPException(status_code=404, detail="Plan no encontrado")
+
+    # Billing bypass protection: paid plans must go through checkout
+    if float(new_plan["price_monthly"] or 0) > 0 and not current_user.get("is_super_admin", False):
+        raise HTTPException(
+            status_code=402,
+            detail="Los planes de pago requieren completar el pago. Usa el checkout de MercadoPago para actualizar tu plan."
+        )
 
     # Get current subscription
     sub = await database.fetch_one(

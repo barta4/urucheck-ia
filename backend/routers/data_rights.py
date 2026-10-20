@@ -1,6 +1,7 @@
 """
 Data subject rights endpoints (ARCO+) — multi-tenant.
 """
+import logging
 import os
 import json
 import csv
@@ -12,6 +13,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from auth import get_current_user
 from database import database
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data-rights", tags=["data-rights"])
 
@@ -143,8 +146,8 @@ async def delete_face_photo(current_user=Depends(get_current_user)):
         if os.path.exists(path):
             try:
                 os.remove(path)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[data_rights] No se pudo eliminar la foto facial en disco: %s", e)
 
     await database.execute(
         "UPDATE employees SET face_reference_path = NULL WHERE id = :eid AND company_id = :cid",
@@ -172,8 +175,8 @@ async def request_data_deletion(
             if os.path.exists(path):
                 try:
                     os.remove(path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("[data_rights] No se pudo eliminar la foto facial en disco: %s", e)
             await database.execute(
                 "UPDATE employees SET face_reference_path = NULL WHERE id = :eid AND company_id = :cid",
                 {"eid": employee_id, "cid": company_id}

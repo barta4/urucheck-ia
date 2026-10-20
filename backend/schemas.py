@@ -281,6 +281,7 @@ class AttendanceResponse(BaseModel):
     streak_message: Optional[str] = None
     next_action: Optional[str] = None
     log_id: Optional[str] = None
+    late_synced: Optional[bool] = None
     face_verified: Optional[bool] = None
     face_confidence: Optional[float] = None
     early_departure: Optional[bool] = False

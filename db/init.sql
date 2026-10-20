@@ -307,36 +307,8 @@ CREATE INDEX idx_audit_company ON audit_logs(company_id);
 CREATE INDEX idx_audit_action ON audit_logs(action);
 CREATE INDEX idx_audit_created_at ON audit_logs(created_at);
 
--- ─── Seed: Default company + admin + subscription ───────────
--- Password: admin123
-INSERT INTO companies (plan_id, name, slug, admin_email, admin_password_hash, status, trial_ends_at)
-VALUES (
-    (SELECT id FROM plans WHERE slug = 'free'),
-    'Mi Empresa',
-    'mi-empresa',
-    'admin@miempresa.com',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lfBFRQHWMFCXp7hJi',
-    'active',
-    NOW() + INTERVAL '14 days'
-);
-
--- Create config for default company
-INSERT INTO company_config (company_id, company_name)
-SELECT id, 'Mi Empresa' FROM companies WHERE slug = 'mi-empresa';
-
--- Create admin employee linked to company
-INSERT INTO employees (company_id, name, email, password_hash, role)
-SELECT id, 'Administrador', 'admin@miempresa.com',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lfBFRQHWMFCXp7hJi',
-    'admin'
-FROM companies WHERE slug = 'mi-empresa';
-
--- Create subscription for default company
-INSERT INTO subscriptions (company_id, plan_id, status, trial_start, trial_end)
-SELECT
-    c.id,
-    c.plan_id,
-    'trial',
-    NOW(),
-    c.trial_ends_at
-FROM companies c WHERE c.slug = 'mi-empresa';
+-- ─── Seed ───────────────────────────────────────────────────
+-- NOTA: La empresa demo (admin) ya NO se siembra aquí con un hash hardcodeado.
+-- El seed se realiza en backend/main.py al arrancar, usando la variable de
+-- entorno SEED_ADMIN_PASSWORD (que debe cumplir la política de complejidad).
+-- Esto evita credenciales conocidas en todo despliegue fresco.

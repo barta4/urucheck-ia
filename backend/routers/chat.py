@@ -1,4 +1,6 @@
 import os
+import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 try:
@@ -12,6 +14,7 @@ from config import settings
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
@@ -121,9 +124,19 @@ async def chat_with_ai(req: ChatRequest, admin=Depends(get_current_admin)):
 
         full_prompt = f"{context}\nPregunta del administrador: {req.message}\nRespuesta:"
 
-        response = model.generate_content(full_prompt)
+        # Async API call — the synchronous generate_content would block the
+        # entire event loop for every user during the seconds the call takes.
+        response = await asyncio.wait_for(
+            model.generate_content_async(full_prompt),
+            timeout=30.0
+        )
         return {"reply": response.text}
 
+    except asyncio.TimeoutError:
+        logger.error("[chat] Timeout (30s) en la llamada a Gemini")
+        raise HTTPException(status_code=504, detail="El asistente de IA tardó demasiado en responder. Intenta de nuevo.")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error en Gemini Chat: {e}")
+        logger.error("[chat] Error en Gemini Chat: %s", e)
         raise HTTPException(status_code=500, detail="Error de comunicación con IA")

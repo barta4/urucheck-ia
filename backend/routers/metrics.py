@@ -2,7 +2,7 @@
 SaaS Metrics — KPIs for the super-admin dashboard.
 MRR, ARR, Churn, LTV, Active Companies, etc.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
@@ -355,8 +355,8 @@ async def get_saas_billing(current_user=Depends(get_current_super_admin)):
 @router.get("/payments-history")
 async def get_payments_history(
     search: str = "",
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     current_user=Depends(get_current_super_admin)
 ):
     """
@@ -570,11 +570,16 @@ async def update_mercadopago_credentials(
 ):
     """
     Save or update MercadoPago credentials in saas_settings.
+    Secrets (client_secret, access_token) are ENCRYPTED at rest with Fernet —
+    a database leak must not expose the platform's billing account.
+    client_id/public_key are public identifiers and stay plaintext.
     """
+    from crypto import encrypt_secret
+
     keys = {
         "mp_client_id": payload.client_id or "",
-        "mp_client_secret": payload.client_secret or "",
-        "mp_access_token": payload.access_token or "",
+        "mp_client_secret": encrypt_secret(payload.client_secret) if payload.client_secret else "",
+        "mp_access_token": encrypt_secret(payload.access_token) if payload.access_token else "",
         "mp_public_key": payload.public_key or "",
     }
 

@@ -3,8 +3,11 @@ Company lifecycle management.
 Handles trial expiration, grace periods, suspension, cancellation.
 """
 import json
+import logging
 from datetime import datetime, timedelta
 from database import database
+
+logger = logging.getLogger(__name__)
 
 
 async def process_lifecycle_events():
@@ -15,7 +18,7 @@ async def process_lifecycle_events():
     - Suspended too long → cancel
     """
     now = datetime.now()
-    print(f"[Lifecycle] Procesando eventos a {now}...")
+    logger.info("[Lifecycle] Procesando eventos a %s...", now)
 
     # 1. Expire trials
     await _expire_trials()
@@ -26,7 +29,7 @@ async def process_lifecycle_events():
     # 3. Suspended too long → cancel (30 days)
     await _cancel_long_suspended()
 
-    print("[Lifecycle] Procesamiento completado.")
+    logger.info("[Lifecycle] Procesamiento completado.")
 
 
 async def _expire_trials():
@@ -41,7 +44,7 @@ async def _expire_trials():
 
     for company in expired:
         cid = str(company["id"])
-        print(f"[Lifecycle] Trial expirado: {company['name']} ({company['slug']})")
+        logger.info("[Lifecycle] Trial expirado: %s (%s)", company["name"], company["slug"])
 
         await database.execute(
             """
@@ -81,7 +84,7 @@ async def _expire_grace():
 
     for company in grace_expired:
         cid = str(company["id"])
-        print(f"[Lifecycle] Suspendiendo: {company['name']} ({company['slug']})")
+        logger.info("[Lifecycle] Suspendiendo: %s (%s)", company["name"], company["slug"])
 
         await database.execute(
             """
@@ -120,7 +123,7 @@ async def _cancel_long_suspended():
 
     for company in long_suspended:
         cid = str(company["id"])
-        print(f"[Lifecycle] Cancelando: {company['name']} ({company['slug']})")
+        logger.info("[Lifecycle] Cancelando: %s (%s)", company["name"], company["slug"])
 
         await database.execute(
             """

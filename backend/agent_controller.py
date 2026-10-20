@@ -1,7 +1,12 @@
 import logging
 import asyncio
+import hashlib
+import hmac
 import httpx
+import json
 import os
+import secrets
+import time
 import urllib.parse
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -20,13 +25,19 @@ from routers.notifications import send_push_notification
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo(settings.TIMEZONE)
 
+# Outbound webhook retry policy: transient failures (network errors, 5xx)
+# are retried up to 3 attempts with a short backoff. 4xx responses are
+# permanent (bad endpoint/auth) and are NOT retried.
+_WEBHOOK_MAX_ATTEMPTS = 3
+_WEBHOOK_RETRY_DELAYS = (0.5, 2.0)
+
 
 
 async def get_company_config(company_id: str) -> dict:
     """Fetch company configuration row. Returns empty dict on error."""
     try:
         row = await database.fetch_one(
-            """SELECT webhook_url, smtp_host, smtp_port, smtp_username, smtp_password,
+            """SELECT webhook_url, webhook_secret, smtp_host, smtp_port, smtp_username, smtp_password,
                       smtp_from_email, smtp_to_email, email_notify_monthly_report,
                       webhook_notify_checkin, webhook_notify_checkout, webhook_notify_break,
                       webhook_notify_late, webhook_notify_absence
@@ -37,6 +48,50 @@ async def get_company_config(company_id: str) -> dict:
     except Exception as exc:
         logger.error("[agent_controller] Fallo al recuperar config empresa %s: %s", company_id[:8], exc)
         return {}
+
+
+def build_webhook_body(event_type: str, payload: dict, timestamp_iso: str) -> bytes:
+    """Serialize the outbound webhook payload deterministically (pure, testable)."""
+    return json.dumps(
+        {"event": event_type, "data": payload, "timestamp": timestamp_iso},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def sign_webhook_body(body: bytes, secret: str, timestamp: str) -> str:
+    """
+    HMAC-SHA256 signature over "<timestamp>.<body>" — the same scheme the
+    receiver must verify to prove the event really came from UruCheck IA
+    (prevents forged attendance events injected into the admin's endpoint).
+
+    Verification on the receiving side:
+      expected = HMAC_SHA256(secret, f"{X-UruCheck-Timestamp}.{raw_body}")
+    """
+    mac = hmac.new(
+        secret.encode("utf-8"),
+        timestamp.encode("utf-8") + b"." + body,
+        hashlib.sha256,
+    )
+    return f"sha256={mac.hexdigest()}"
+
+
+async def _ensure_webhook_secret(company_id: str, config: dict) -> str:
+    """Return the company's webhook signing secret, provisioning one if missing."""
+    secret = (config or {}).get("webhook_secret")
+    if secret:
+        return secret
+    try:
+        secret = secrets.token_urlsafe(32)
+        await database.execute(
+            "UPDATE company_config SET webhook_secret = :s WHERE company_id = :cid",
+            {"s": secret, "cid": company_id},
+        )
+        logger.info("[agent_controller] Secreto de firma de webhook provisionado para empresa %s...", company_id[:8])
+        return secret
+    except Exception as exc:
+        logger.warning("[agent_controller] No se pudo provisionar secreto de webhook: %s", exc)
+        return ""
 
 
 async def _get_employee_push_token(employee_id: str, company_id: str) -> tuple[str | None, str | None]:
@@ -51,33 +106,82 @@ async def _get_employee_push_token(employee_id: str, company_id: str) -> tuple[s
 
 
 
-async def send_webhook(event_type: str, payload: dict, company_id: str, notify_flag: str = None) -> None:
-    """Send a webhook event to the company's configured webhook URL."""
+async def send_webhook(event_type: str, payload: dict, company_id: str, notify_flag: str = None) -> bool:
+    """
+    Send a webhook event to the company's configured webhook URL.
+
+    Delivery guarantees:
+      - The HTTP response STATUS is checked — a 4xx/5xx endpoint is a
+        failure, not a silent "sent".
+      - Transient failures (network errors, 5xx) are retried up to
+        _WEBHOOK_MAX_ATTEMPTS with a short backoff.
+      - The payload is HMAC-signed (X-UruCheck-Signature) so the receiver
+        can verify the event came from the platform and was not forged.
+    """
     try:
         config = await get_company_config(company_id)
         webhook_url = config.get("webhook_url")
 
         if not webhook_url:
-            return
+            return False
 
         if notify_flag and not config.get(notify_flag, False):
-            return
+            return False
+
+        # Anti-SSRF: re-validate destination at send time (config may have
+        # been set before validation existed, or via direct DB access).
+        from url_guard import validate_outbound_url, UnsafeOutboundURL
+        try:
+            webhook_url = validate_outbound_url(webhook_url, context=f"event:{event_type}")
+        except UnsafeOutboundURL as exc:
+            logger.warning("[agent_controller] Webhook de empresa %s rechazado por URL no permitida: %s", company_id[:8], exc)
+            return False
+
+        body = build_webhook_body(event_type, payload, datetime.now(TZ).isoformat())
+        headers = {"Content-Type": "application/json"}
+        signing_secret = await _ensure_webhook_secret(company_id, config)
+        if signing_secret:
+            ts = str(int(time.time()))
+            headers["X-UruCheck-Timestamp"] = ts
+            headers["X-UruCheck-Signature"] = sign_webhook_body(body, signing_secret, ts)
 
         # Log only the domain, not the full URL (may contain tokens in query params)
         domain = urllib.parse.urlparse(webhook_url).netloc
         async with httpx.AsyncClient() as client:
-            await client.post(
-                webhook_url,
-                json={
-                    "event": event_type,
-                    "data": payload,
-                    "timestamp": datetime.now(TZ).isoformat(),
-                },
-                timeout=10.0,
-            )
-            logger.info("Webhook [%s] enviado a %s", event_type, domain)
+            backoff = _WEBHOOK_RETRY_DELAYS[0] if _WEBHOOK_RETRY_DELAYS else 0.5
+            for attempt in range(1, _WEBHOOK_MAX_ATTEMPTS + 1):
+                try:
+                    resp = await client.post(webhook_url, content=body, headers=headers, timeout=10.0)
+                except Exception as exc:
+                    if attempt < _WEBHOOK_MAX_ATTEMPTS:
+                        logger.warning("[agent_controller] Webhook [%s] a %s: error de red (intento %d): %s",
+                                       event_type, domain, attempt, exc)
+                        await asyncio.sleep(backoff)
+                        backoff *= 4
+                        continue
+                    logger.error("[agent_controller] Webhook [%s] a %s falló tras %d intentos: %s",
+                                 event_type, domain, attempt, exc)
+                    return False
+
+                if 200 <= resp.status_code < 300:
+                    logger.info("Webhook [%s] enviado a %s", event_type, domain)
+                    return True
+
+                if resp.status_code >= 500 and attempt < _WEBHOOK_MAX_ATTEMPTS:
+                    logger.warning("[agent_controller] Webhook [%s] a %s: HTTP %d (intento %d) — reintentando",
+                                    event_type, domain, resp.status_code, attempt)
+                    await asyncio.sleep(backoff)
+                    backoff *= 4
+                    continue
+
+                # 4xx and persistent 5xx are permanent failures
+                logger.warning("[agent_controller] Webhook [%s] a %s respondió HTTP %d — evento descartado",
+                               event_type, domain, resp.status_code)
+                return False
+        return False
     except Exception as exc:
         logger.error("Error enviando webhook [%s]: %s", event_type, exc)
+        return False
 
 
 
@@ -189,58 +293,164 @@ async def notify_late(
 # ─── Daily absence check (multi-tenant) ──────────────────────────────────────
 
 async def check_daily_absences():
-    today = date.today()
+    """
+    Detects employees whose shift already started without a check-in.
+
+    Runs HOURLY (was a single 10:00 run — shifts starting later in the day
+    were never checked). Per absentee, once per day (dedup):
+      1. 'employee_absent' webhook to the admin (same contract as before).
+      2. Push nudge to the employee ("no registramos tu entrada").
+    A 15-minute grace period avoids nudging someone who is simply walking in.
+    Suspended/cancelled companies are excluded.
+    """
+    from routers.notifications import send_push_notifications_batch, try_acquire_push_slot
+    from rules_engine import ensure_time
+
+    now = datetime.now(TZ)
+    today = now.date()  # project timezone
     weekday = today.weekday() + 1
-    now = datetime.now(TZ).time()
-    logger.info("[Agente] Verificando ausencias del %s...", today)
+    now_time = now.time()
 
-    companies = await database.fetch_all("SELECT id FROM companies WHERE active = true")
+    absentees = await database.fetch_all(
+        """
+        SELECT e.id, e.name, e.expo_push_token, s.start_time, c.id AS company_id
+        FROM employees e
+        JOIN schedules s ON e.id = s.employee_id
+        JOIN companies c ON e.company_id = c.id
+        WHERE e.active = true AND c.active = true
+          AND c.status NOT IN ('suspended', 'cancelled')
+          AND :day = ANY(s.day_of_week)
+          AND s.start_time <= :now_time
+          AND NOT EXISTS (
+              SELECT 1 FROM attendance_logs al
+              WHERE al.employee_id = e.id AND al.company_id = c.id
+                AND al.type = 'check_in' AND DATE(al.timestamp) = :today
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM leave_requests lr
+              WHERE lr.employee_id = e.id AND lr.company_id = c.id
+                AND lr.status = 'approved'
+                AND :today >= lr.start_date AND :today <= lr.end_date
+          )
+        """,
+        {"day": weekday, "now_time": now_time, "today": today},
+    )
 
-    for company in companies:
-        cid = str(company["id"])
-        scheduled = await database.fetch_all(
-            """
-            SELECT e.id, e.name, s.start_time
-            FROM employees e
-            JOIN schedules s ON e.id = s.employee_id
-            WHERE e.active = true AND e.company_id = :cid AND :day = ANY(s.day_of_week)
-            """,
-            {"cid": cid, "day": weekday}
-        )
-
-        from rules_engine import ensure_time
-        for emp in scheduled:
-            s_time = ensure_time(emp["start_time"])
-            if s_time and now < s_time:
+    push_messages = []
+    reported = 0
+    for emp in absentees:
+        s_time = ensure_time(emp["start_time"])
+        # Grace: don't nudge in the first 15 minutes after the shift starts
+        if s_time:
+            elapsed_min = (now - datetime.combine(today, s_time, tzinfo=TZ)).total_seconds() / 60
+            if elapsed_min < 15:
                 continue
 
-            check_in = await database.fetch_one(
-                "SELECT id FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND type = 'check_in' AND DATE(timestamp) = :today",
-                {"eid": str(emp["id"]), "cid": cid, "today": today}
-            )
-            if not check_in:
-                # Check for approved leave
-                leave = await database.fetch_one(
-                    """SELECT id FROM leave_requests 
-                       WHERE employee_id = :eid AND company_id = :cid 
-                         AND status = 'approved' 
-                         AND :today >= start_date AND :today <= end_date""",
-                    {"eid": str(emp["id"]), "cid": cid, "today": today}
-                )
-                
-                if not leave:
-                    await _notify_event(
-                        "employee_absent", str(emp["id"]), cid,
-                        {"message": f"No registró entrada hoy ({s_time or emp['start_time']} era su horario)"},
-                        notify_flag="webhook_notify_absence"
-                    )
-                    logger.info("[Agente] Ausencia detectada: %s (empresa %s...)", emp['name'], cid[:8])
+        # One absence report per employee per day (webhook AND push together)
+        dedup_key = f"absence:{emp['id']}:{today.isoformat()}"
+        if not await try_acquire_push_slot(str(emp["id"]), "absence", dedup_key):
+            continue
+
+        await _notify_event(
+            "employee_absent", str(emp["id"]), str(emp["company_id"]),
+            {"message": f"No registró entrada hoy ({s_time or emp['start_time']} era su horario)"},
+            notify_flag="webhook_notify_absence",
+        )
+        logger.info("[Agente] Ausencia detectada: %s (empresa %s...)", emp['name'], str(emp['company_id'])[:8])
+
+        # NEW: nudge the employee too — they may have simply forgotten to mark
+        if emp["expo_push_token"]:
+            push_messages.append({
+                "to": emp["expo_push_token"],
+                "title": "⚠️ No registramos tu entrada",
+                "body": (
+                    f"Hola {emp['name']}, tu turno de las "
+                    f"{s_time.strftime('%H:%M') if s_time else emp['start_time']} ya comenzó y no tenemos tu entrada registrada. "
+                    "Recuerda marcar tu asistencia desde la app."
+                ),
+            })
+        reported += 1
+
+    if push_messages:
+        stats = await send_push_notifications_batch(push_messages)
+        logger.info(
+            "[Agente] Ausencias: %d reportadas, pushes: %d enviados / %d fallidos / %d purgados",
+            reported, stats["sent"], stats["failed"], stats["purged"],
+        )
 
 
 # ─── Monthly report (multi-tenant) ───────────────────────────────────────────
 
-async def run_monthly_report_for_company(cid: str):
-    today = date.today()
+def build_monthly_report_html(report_data: list, month_label_es: str) -> str:
+    """
+    Build the monthly report email HTML.
+
+    All employee-provided fields (name, CI, phone, address) are HTML-escaped:
+    an employee registered as `O'Brien <script>` must not break/inject
+    markup into the admin's email. Pure function (unit tested).
+    """
+    import html as _html
+
+    html_rows = ""
+    for row in report_data:
+        bono_status = "✅ Elegible" if row["bono_elegible"] else "❌ No Elegible"
+        html_rows += f"""
+                <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
+                    <td style="padding: 10px; font-weight: bold; color: #1a202c;">{_html.escape(str(row['name']))}</td>
+                    <td style="padding: 10px; color: #4a5568;">{_html.escape(str(row['document_id']))}</td>
+                    <td style="padding: 10px; color: #4a5568;">{_html.escape(str(row['phone']))}</td>
+                    <td style="padding: 10px; color: #4a5568;">{_html.escape(str(row['address']))}</td>
+                    <td style="padding: 10px; text-align: center; color: #1a202c;">{row['dias_asistidos']}</td>
+                    <td style="padding: 10px; text-align: center; color: #e53e3e; font-weight: bold;">{row['tardanzas']}</td>
+                    <td style="padding: 10px; text-align: center; color: #3182ce; font-weight: bold;">{row['horas_totales']} hs</td>
+                    <td style="padding: 10px; text-align: center; font-weight: bold;">{bono_status}</td>
+                </tr>
+                """
+
+    return f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f7fafc;">
+                <div style="max-width: 900px; margin: 0 auto; background-color: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
+                    <div style="text-align: center; margin-bottom: 30px; border-bottom: 2px solid #3182ce; padding-bottom: 20px;">
+                        <h1 style="color: #2b6cb0; margin: 0; font-size: 22px;">Reporte Mensual de Asistencia</h1>
+                        <p style="color: #718096; margin: 5px 0 0 0; font-size: 15px;">Período: {_html.escape(month_label_es)}</p>
+                    </div>
+
+                    <p style="color: #4a5568; font-size: 15px; line-height: 1.5;">
+                        Estimado Administrador,<br><br>
+                        A continuación, adjuntamos el análisis mensual detallado de asistencia, puntualidad y datos de contacto de sus empleados correspondiente al mes de <strong>{_html.escape(month_label_es)}</strong>.
+                    </p>
+
+                    <table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px;">
+                        <thead>
+                            <tr style="background-color: #ebf8ff; border-bottom: 2px solid #bee3f8;">
+                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Empleado</th>
+                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">C.I.</th>
+                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Teléfono</th>
+                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Dirección</th>
+                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Asistencias</th>
+                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Tardanzas</th>
+                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Horas</th>
+                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Bono</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {html_rows}
+                        </tbody>
+                    </table>
+
+                    <div style="margin-top: 30px; padding: 15px; background-color: #f7fafc; border-radius: 8px; border-left: 4px solid #3182ce; font-size: 12px; color: #718096;">
+                        Este es un reporte automático generado y enviado por la plataforma de <strong>UruCheck IA</strong> utilizando la configuración SMTP de su empresa.
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+
+async def run_monthly_report_for_company(cid: str, honor_notify_flag: bool = False):
+    # Project timezone — NOT the container's TZ env
+    today = datetime.now(TZ).date()
     first_day_of_this_month = today.replace(day=1)
     last_day_of_prev_month = first_day_of_this_month - timedelta(days=1)
     first_day_of_prev_month = last_day_of_prev_month.replace(day=1)
@@ -320,82 +530,60 @@ async def run_monthly_report_for_company(cid: str):
             "total_employees": len(report_data),
             "report": report_data
         }
-        await send_webhook("monthly_attendance_report", payload, cid)
+        webhook_sent = await send_webhook("monthly_attendance_report", payload, cid)
 
         # Enviar correo SMTP si está configurado
         config = await get_company_config(cid)
-        if config.get("smtp_host") and config.get("smtp_username") and config.get("smtp_password"):
-            html_rows = ""
-            for row in report_data:
-                bono_status = "✅ Elegible" if row["bono_elegible"] else "❌ No Elegible"
-                html_rows += f"""
-                <tr style="border-bottom: 1px solid #e2e8f0; font-size: 13px;">
-                    <td style="padding: 10px; font-weight: bold; color: #1a202c;">{row['name']}</td>
-                    <td style="padding: 10px; color: #4a5568;">{row['document_id']}</td>
-                    <td style="padding: 10px; color: #4a5568;">{row['phone']}</td>
-                    <td style="padding: 10px; color: #4a5568;">{row['address']}</td>
-                    <td style="padding: 10px; text-align: center; color: #1a202c;">{row['dias_asistidos']}</td>
-                    <td style="padding: 10px; text-align: center; color: #e53e3e; font-weight: bold;">{row['tardanzas']}</td>
-                    <td style="padding: 10px; text-align: center; color: #3182ce; font-weight: bold;">{row['horas_totales']} hs</td>
-                    <td style="padding: 10px; text-align: center; font-weight: bold;">{bono_status}</td>
-                </tr>
-                """
+        email_sent = None
+        email_error = None
 
-            html_content = f"""
-            <html>
-            <body style="font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f7fafc;">
-                <div style="max-width: 900px; margin: 0 auto; background-color: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e2e8f0;">
-                    <div style="text-align: center; margin-bottom: 30px; border-bottom: 2px solid #3182ce; padding-bottom: 20px;">
-                        <h1 style="color: #2b6cb0; margin: 0; font-size: 22px;">Reporte Mensual de Asistencia</h1>
-                        <p style="color: #718096; margin: 5px 0 0 0; font-size: 15px;">Período: {month_label_es}</p>
-                    </div>
-                    
-                    <p style="color: #4a5568; font-size: 15px; line-height: 1.5;">
-                        Estimado Administrador,<br><br>
-                        A continuación, adjuntamos el análisis mensual detallado de asistencia, puntualidad y datos de contacto de sus empleados correspondiente al mes de <strong>{month_label_es}</strong>.
-                    </p>
-                    
-                    <table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px;">
-                        <thead>
-                            <tr style="background-color: #ebf8ff; border-bottom: 2px solid #bee3f8;">
-                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Empleado</th>
-                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">C.I.</th>
-                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Teléfono</th>
-                                <th style="padding: 12px; text-align: left; color: #2b6cb0;">Dirección</th>
-                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Asistencias</th>
-                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Tardanzas</th>
-                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Horas</th>
-                                <th style="padding: 12px; text-align: center; color: #2b6cb0;">Bono</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {html_rows}
-                        </tbody>
-                    </table>
-                    
-                    <div style="margin-top: 30px; padding: 15px; background-color: #f7fafc; border-radius: 8px; border-left: 4px solid #3182ce; font-size: 12px; color: #718096;">
-                        Este es un reporte automático generado y enviado por la plataforma de <strong>UruCheck IA</strong> utilizando la configuración SMTP de su empresa.
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
+        smtp_ready = bool(config.get("smtp_host") and config.get("smtp_username") and config.get("smtp_password"))
+        # The admin's toggle in Company Settings actually gates the
+        # AUTOMATIC monthly job; a manual send from the panel is explicit
+        # intent and is never blocked by the flag.
+        flag_ok = (not honor_notify_flag) or bool(config.get("email_notify_monthly_report"))
+
+        if smtp_ready and flag_ok:
+            html_content = build_monthly_report_html(report_data, month_label_es)
             from email_service import send_smtp_email
-            send_smtp_email(
+            # smtplib is fully blocking (up to 15s) — run it in a worker
+            # thread to keep the event loop responsive for all other users.
+            sent = await asyncio.to_thread(
+                send_smtp_email,
                 config=config,
                 subject=f"UruCheck IA - Reporte Mensual de Asistencia ({month_label_es})",
                 html_content=html_content,
                 text_content=f"Reporte Mensual de Asistencia ({month_label_es}). Por favor, abra el correo en formato HTML para visualizar el reporte."
             )
-        print(f"[Agente] Reporte mensual procesado para empresa {cid[:8]}... ({len(report_data)} empleados).")
+            email_sent = bool(sent)
+            if not email_sent:
+                email_error = "El servidor SMTP rechazó el envío (revisar credenciales/puerto en Configuración → Email)"
+        elif smtp_ready and not flag_ok:
+            logger.info("[Agente] Reporte mensual de %s: envío de email omitido (email_notify_monthly_report desactivado).", cid[:8])
+
+        logger.info("[Agente] Reporte mensual procesado para empresa %s... (%d empleados).", cid[:8], len(report_data))
+        return {
+            "employees": len(report_data),
+            "webhook_sent": webhook_sent,
+            "email_sent": email_sent,
+            "email_error": email_error,
+        }
+
+    logger.info("[Agente] Reporte mensual de %s: sin empleados activos — nada enviado.", cid[:8])
+    return {"employees": 0, "webhook_sent": False, "email_sent": None, "email_error": None}
 
 async def generate_monthly_report():
-    companies = await database.fetch_all("SELECT id FROM companies WHERE active = true")
+    # Exclude suspended/cancelled companies — reports are part of the paid service
+    companies = await database.fetch_all(
+        "SELECT id FROM companies WHERE active = true AND status NOT IN ('suspended', 'cancelled')"
+    )
     for company in companies:
         try:
-            await run_monthly_report_for_company(str(company["id"]))
+            # honor_notify_flag=True: the AUTOMATIC job respects the admin's
+            # email_notify_monthly_report toggle in Company Settings.
+            await run_monthly_report_for_company(str(company["id"]), honor_notify_flag=True)
         except Exception as e:
-            print(f"[Agente Error] Error generando reporte mensual para {company['id']}: {e}")
+            logger.error("[Agente] Error generando reporte mensual para %s: %s", company["id"], e)
 
 
 # ─── Data retention cleanup (multi-tenant) ────────────────────────────────────
@@ -403,7 +591,7 @@ async def generate_monthly_report():
 async def cleanup_old_photos():
     from datetime import timedelta
     cutoff = (datetime.now(TZ) - timedelta(days=90)).replace(tzinfo=None)
-    print(f"[Agente] Limpiando fotos anteriores a {cutoff.date()}...")
+    logger.info("[Agente] Limpiando fotos anteriores a %s...", cutoff.date())
 
     old_photos = await database.fetch_all(
         """
@@ -422,7 +610,7 @@ async def cleanup_old_photos():
                 os.remove(path)
                 deleted += 1
             except Exception as e:
-                print(f"[Agente] Error eliminando {path}: {e}")
+                logger.warning("[Agente] Error eliminando %s: %s", path, e)
 
     await database.execute(
         "UPDATE attendance_logs SET photo_path = NULL WHERE timestamp < :cutoff",
@@ -436,75 +624,105 @@ async def cleanup_old_photos():
 
 
 async def check_upcoming_shifts():
-    today = date.today()
-    weekday = today.weekday() + 1
+    """
+    Runs every 5 minutes. Two reminder types, both DEDUPED so a window
+    overlapping several cron ticks never sends a reminder twice:
+      1. Shift-start reminder (10-15 min before the scheduled start).
+      2. Break-end reminder (BREAK_REMINDER_WINDOW_START minutes after the
+         break started — the setting is actually used now).
+
+    Multi-tenant in a SINGLE query per reminder type (no per-company /
+    per-employee N+1), and suspended/cancelled companies are excluded.
+    """
+    from routers.notifications import send_push_notifications_batch, try_acquire_push_slot
+    from rules_engine import ensure_time
+
     now = datetime.now(TZ)
+    today = now.date()  # project timezone — NOT the container's TZ
+    weekday = today.weekday() + 1
     now_naive = now.replace(tzinfo=None)
 
-    # Lógica 1: Próximos a entrar (10-15 min) — multi-tenant
+    # ── 1. Shift-start reminder ────────────────────────────────────────────
     start_time_lower = (now + timedelta(minutes=10)).time()
     start_time_upper = (now + timedelta(minutes=15)).time()
 
-    companies = await database.fetch_all("SELECT id FROM companies WHERE active = true")
+    upcoming = await database.fetch_all(
+        """
+        SELECT e.id, e.name, e.expo_push_token, s.id AS schedule_id, s.start_time
+        FROM employees e
+        JOIN schedules s ON e.id = s.employee_id
+        JOIN companies c ON e.company_id = c.id
+        WHERE e.active = true AND c.active = true
+          AND c.status NOT IN ('suspended', 'cancelled')
+          AND :day = ANY(s.day_of_week)
+          AND e.expo_push_token IS NOT NULL
+          AND s.start_time >= :start_lower AND s.start_time <= :start_upper
+          AND NOT EXISTS (
+              SELECT 1 FROM attendance_logs al
+              WHERE al.employee_id = e.id AND al.company_id = c.id
+                AND al.type = 'check_in' AND DATE(al.timestamp) = :today
+          )
+        """,
+        {"day": weekday, "start_lower": start_time_lower, "start_upper": start_time_upper, "today": today},
+    )
 
-    for company in companies:
-        cid = str(company["id"])
+    shift_messages = []
+    for emp in upcoming:
+        s_time = ensure_time(emp["start_time"])
+        time_str = s_time.strftime('%H:%M') if s_time else str(emp["start_time"])
+        # One reminder per (schedule, day) — the 10-15 min window overlaps
+        # two */5 cron ticks; without dedup the employee got the push twice.
+        dedup_key = f"shift:{emp['schedule_id']}:{today.isoformat()}"
+        if await try_acquire_push_slot(str(emp["id"]), "shift_reminder", dedup_key):
+            shift_messages.append({
+                "to": emp["expo_push_token"],
+                "title": "⏰ ¡Tu turno comienza pronto!",
+                "body": f"Hola {emp['name']}, recuerda registrar tu entrada a las {time_str}.",
+            })
 
-        scheduled = await database.fetch_all(
-            """
-            SELECT e.id, e.name, e.expo_push_token, s.start_time
-            FROM employees e
-            JOIN schedules s ON e.id = s.employee_id
-            WHERE e.active = true AND e.company_id = :cid
-              AND :day = ANY(s.day_of_week) AND e.expo_push_token IS NOT NULL
-              AND s.start_time >= :start_lower AND s.start_time <= :start_upper
-            """,
-            {"cid": cid, "day": weekday, "start_lower": start_time_lower, "start_upper": start_time_upper}
+    # ── 2. Break-end reminder ─────────────────────────────────────────────
+    # Window: [BREAK_REMINDER_WINDOW_START, +10 min) — slightly wider than
+    # the cron tick so a delayed tick doesn't miss it; dedup keeps it single.
+    window_start = max(5, settings.BREAK_REMINDER_WINDOW_START)
+    window_end = window_start + 10
+
+    open_breaks = await database.fetch_all(
+        """
+        SELECT l.id AS log_id, l.employee_id, l.timestamp, e.name, e.expo_push_token
+        FROM attendance_logs l
+        JOIN employees e ON l.employee_id = e.id
+        JOIN companies c ON l.company_id = c.id
+        WHERE l.type = 'break_start' AND e.active = true AND c.active = true
+          AND c.status NOT IN ('suspended', 'cancelled')
+          AND DATE(l.timestamp) = :today
+          AND e.expo_push_token IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM attendance_logs b
+              WHERE b.employee_id = l.employee_id AND b.company_id = l.company_id
+                AND b.type = 'break_end' AND b.timestamp > l.timestamp
+          )
+        """,
+        {"today": today},
+    )
+
+    break_messages = []
+    for log in open_breaks:
+        elapsed = (now_naive - log["timestamp"]).total_seconds() / 60
+        if window_start <= elapsed < window_end:
+            dedup_key = f"break:{log['log_id']}"
+            if await try_acquire_push_slot(str(log["employee_id"]), "break_reminder", dedup_key):
+                break_messages.append({
+                    "to": log["expo_push_token"],
+                    "title": "🥪 ¡Se termina tu almuerzo!",
+                    "body": f"Hola {log['name']}, tu hora de almuerzo termina en unos minutos. ¡No olvides marcar tu regreso!",
+                })
+
+    if shift_messages or break_messages:
+        stats = await send_push_notifications_batch(shift_messages + break_messages)
+        logger.info(
+            "[Agente] Recordatorios (%d turnos, %d descansos): %d enviados, %d fallidos, %d tokens purgados",
+            len(shift_messages), len(break_messages), stats["sent"], stats["failed"], stats["purged"],
         )
-
-        from rules_engine import ensure_time
-        for emp in scheduled:
-            check_in = await database.fetch_one(
-                "SELECT id FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND type = 'check_in' AND DATE(timestamp) = :today",
-                {"eid": str(emp["id"]), "cid": cid, "today": today}
-            )
-            if not check_in:
-                s_time = ensure_time(emp["start_time"])
-                time_str = s_time.strftime('%H:%M') if s_time else str(emp["start_time"])
-                await send_push_notification(
-                    to=emp["expo_push_token"],
-                    title="⏰ ¡Tu turno comienza pronto!",
-                    body=f"Hola {emp['name']}, recuerda registrar tu entrada a las {time_str}."
-                )
-
-    # Lógica 2: Retorno de almuerzo (55 a 60 min desde break_start) — multi-tenant
-    for company in companies:
-        cid = str(company["id"])
-
-        break_starts = await database.fetch_all(
-            """
-            SELECT l.employee_id, l.timestamp, e.name, e.expo_push_token
-            FROM attendance_logs l
-            JOIN employees e ON l.employee_id = e.id
-            WHERE l.type = 'break_start' AND l.company_id = :cid
-              AND DATE(l.timestamp) = :today AND e.expo_push_token IS NOT NULL
-            """,
-            {"cid": cid, "today": today}
-        )
-
-        for log in break_starts:
-            break_end = await database.fetch_one(
-                "SELECT id FROM attendance_logs WHERE employee_id = :eid AND company_id = :cid AND type = 'break_end' AND timestamp > :break_start",
-                {"eid": log["employee_id"], "cid": cid, "break_start": log["timestamp"]}
-            )
-            if not break_end:
-                elapsed = (now_naive - log["timestamp"]).total_seconds() / 60
-                if 55 <= elapsed < (55 + 5):  # Window defined by BREAK_REMINDER_WINDOW_START setting
-                    await send_push_notification(
-                        to=log["expo_push_token"],
-                        title="\U0001f96a \u00a1Se termina tu almuerzo!",
-                        body=f"Hola {log['name']}, tu hora de almuerzo termina en unos minutos. \u00a1No olvides marcar tu regreso!"
-                    )
 
 
 # ─── Scheduler setup ─────────────────────────────────────────────────────────
@@ -513,7 +731,10 @@ def start_scheduler():
     if not scheduler:
         logger.warning("APScheduler no está instalado. Las tareas programadas están inactivas.")
         return
-    scheduler.add_job(check_daily_absences, CronTrigger(hour=10, minute=0, timezone=TZ))
+    # Absences run hourly (staggered at :07 to avoid colliding with the
+    # lifecycle job at :00) — a single 10:00 run missed every shift that
+    # started later in the day. Dedup guarantees one report per day.
+    scheduler.add_job(check_daily_absences, CronTrigger(minute=7, timezone=TZ))
     scheduler.add_job(generate_monthly_report, CronTrigger(day=1, hour=0, minute=5, timezone=TZ))
     scheduler.add_job(cleanup_old_photos, CronTrigger(hour=3, minute=0, timezone=TZ))
     scheduler.add_job(check_upcoming_shifts, CronTrigger(minute='*/5', timezone=TZ))
