@@ -1,6 +1,8 @@
 # Environment & Secrets
 .env
 .env.*
+# The template is documentation, NOT a secret — it must be committed
+!.env.example
 *.local
 *.pem
 *.key

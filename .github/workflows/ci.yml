@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: Backend — tests (FastAPI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-test.txt
+
+      # Lightweight dependency set (tests run with mocked DB — the full
+      # requirements.txt compiles dlib/face_recognition which takes 15+ min
+      # and adds no test coverage).
+      - name: Install test dependencies
+        run: pip install -r backend/requirements-test.txt
+
+      - name: Compile all backend modules
+        working-directory: backend
+        run: |
+          python -m compileall -q main.py auth.py config.py crypto.py database.py \
+            db_utils.py email_service.py face_service.py payment_service.py \
+            pdf_service.py mp_oauth.py agent_controller.py company_lifecycle.py \
+            resource_limiter.py rules_engine.py schedule_validator.py \
+            schemas.py url_guard.py routers
+
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest tests -q
+
+  frontend-build:
+    name: Frontend Admin — build (React/Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend-admin/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend-admin
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend-admin
+        run: npm run build

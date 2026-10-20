@@ -85,10 +85,13 @@ docker-compose ps
 curl http://localhost/api/health
 ```
 
-### Credenciales por defecto (empresa demo)
-- **Email:** admin@miempresa.com
-- **Password:** admin123
-- ⚠️ Cambiar inmediatamente via panel de empleados
+### Credenciales de la empresa demo (opcional)
+- La empresa demo **ya no se crea con una contraseña conocida/hardcodeada**.
+- Si defines `SEED_ADMIN_PASSWORD` en tu `.env` (debe cumplir la política:
+  8+ caracteres, un número y una mayúscula), se crea `admin@miempresa.com`
+  con esa clave en el primer arranque. **Anota esa clave**: no se vuelve a mostrar.
+- Sin `SEED_ADMIN_PASSWORD`, no se crea ninguna empresa demo: registra tu
+  empresa desde la pantalla de registro (`/register`).
 
 ---
 

@@ -32,6 +32,12 @@ services:
     networks:
       - internal
     # Postgres NO expone puerto público — solo accesible internamente
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attendance_user -d attendance_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ── Backend API ─────────────────────────────────────────────────────────────
   backend:
@@ -41,6 +47,7 @@ services:
     environment:
       DATABASE_URL: postgresql://attendance_user:${DB_PASSWORD}@postgres:5432/attendance_db
       SECRET_KEY: ${SECRET_KEY}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       PHOTOS_PATH: /app/photos
       FRONTEND_URL: ${FRONTEND_URL}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -54,10 +61,18 @@ services:
     volumes:
       - photos_data:/app/photos
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - internal
       - dokploy-network  # red de Traefik gestionada por Dokploy
+    healthcheck:
+      # /api/health verifica la conexión real a Postgres (degraded si falla)
+      test: ["CMD", "python", "-c", "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/api/health', timeout=5); sys.exit(0 if r.status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=dokploy-network"
@@ -80,8 +95,17 @@ services:
     environment:
       # Inyectada en runtime por docker-entrypoint.sh — sin rebuild
       VITE_API_URL: ${VITE_API_URL}
+    depends_on:
+      backend:
+        condition: service_healthy
     networks:
       - dokploy-network  # solo necesita red de Traefik
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     labels:
       - "traefik.enable=true"
       # Ruta: todo lo demás va al frontend
