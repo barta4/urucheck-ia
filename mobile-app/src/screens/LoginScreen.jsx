@@ -9,21 +9,34 @@ import api, { DEFAULT_API_URL } from '../api'
 import { useAuth } from '../context/AuthContext'
 import { useCompany } from '../hooks/useCompany'
 
+// Hosts that are allowed over plain http (local development / LAN servers).
+// Public hostnames are ALWAYS upgraded to https — sending the Bearer token and
+// credentials over cleartext to an arbitrary server is a phishing vector.
+const isLocalHost = (host) =>
+  host === 'localhost' ||
+  host.startsWith('127.') ||
+  host.startsWith('192.168.') ||
+  host.startsWith('10.') ||
+  /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+
 const formatApiUrl = (input) => {
   let url = input.trim();
   if (!url) return '';
   url = url.replace(/\/+$/, '');
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    if (url.includes('localhost') || url.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/)) {
-      url = 'http://' + url;
-    } else {
-      url = 'https://' + url;
-    }
-  }
+
+  let scheme = null;
+  if (url.startsWith('https://')) { scheme = 'https'; url = url.slice(8); }
+  else if (url.startsWith('http://')) { scheme = 'http'; url = url.slice(7); }
+
+  // Extract the host BEFORE appending /api (may include a port)
+  const hostName = url.split('/')[0].split(':')[0];
+  if (!scheme) scheme = isLocalHost(hostName) ? 'http' : 'https';
+  if (scheme === 'http' && !isLocalHost(hostName)) scheme = 'https';
+
   if (!url.endsWith('/api')) {
     url = url + '/api';
   }
-  return url;
+  return `${scheme}://${url}`;
 };
 
 export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
@@ -34,7 +47,12 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [customServer, setCustomServer] = useState('')
+  const [customServerActive, setCustomServerActive] = useState(false)
   const [showServerConfig, setShowServerConfig] = useState(false)
+  // Multi-tenant: shown when the backend reports the email exists in
+  // more than one company (needs the company identifier).
+  const [showCompanySlug, setShowCompanySlug] = useState(false)
+  const [companySlug, setCompanySlug] = useState('')
 
   useEffect(() => {
     setCompany(globalCompany)
@@ -44,6 +62,7 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
     AsyncStorage.getItem('custom_api_url').then(val => {
       if (val) {
         setCustomServer(val.replace(/\/api$/, '').replace(/^https?:\/\//, ''))
+        setCustomServerActive(true)
       }
     })
   }, [])
@@ -52,6 +71,7 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
     if (!customServer.trim()) {
       await AsyncStorage.removeItem('custom_api_url')
       api.defaults.baseURL = DEFAULT_API_URL
+      setCustomServerActive(false)
       Alert.alert('Servidor reestablecido', 'Se ha reestablecido el servidor predeterminado.')
       try {
         const res = await api.get('/company/config')
@@ -70,11 +90,15 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
         const base = formatted.replace(/\/api$/, '')
         data.logo_url = base + data.logo_url
       }
-      
+
       await AsyncStorage.setItem('custom_api_url', formatted)
       api.defaults.baseURL = formatted
       setCompany(data)
-      Alert.alert('Conexión exitosa', `Conectado correctamente a: ${data.company_name}`)
+      setCustomServerActive(true)
+      const schemeNote = formatted.startsWith('https://')
+        ? ''
+        : '\n\n⚠️ Conexión sin cifrar (solo red local).'
+      Alert.alert('Conexión exitosa', `Conectado correctamente a: ${data.company_name}${schemeNote}`)
       setShowServerConfig(false)
     } catch (err) {
       Alert.alert('Error de conexión', 'No se pudo conectar al servidor. Verifica el dominio o la dirección IP.')
@@ -87,13 +111,21 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
     if (!email || !password) return Alert.alert('Error', 'Completa todos los campos')
     setLoading(true)
     try {
-      await login(email.trim().toLowerCase(), password)
+      await login(email.trim().toLowerCase(), password, showCompanySlug ? companySlug : null)
       if (onLoginSuccess) onLoginSuccess()
     } catch (err) {
-      if (err.response?.status === 429) {
+      const detail = err.response?.data?.detail
+      if (detail === 'multiple_companies') {
+        // Email exists in several companies — ask for the company identifier
+        setShowCompanySlug(true)
+        Alert.alert(
+          'Múltiples empresas',
+          'Tu correo está registrado en más de una empresa. Ingresa el identificador de tu empresa (ej: mi-empresa) para continuar.'
+        )
+      } else if (err.response?.status === 429) {
         Alert.alert('Demasiados intentos', 'Por seguridad, espera un minuto antes de intentar nuevamente.')
       } else {
-        Alert.alert('Error', err.response?.data?.detail || 'Email o contraseña incorrectos')
+        Alert.alert('Error', detail || 'Email o contraseña incorrectos')
       }
     } finally {
       setLoading(false)
@@ -122,6 +154,18 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
         <TextInput style={styles.input} placeholder="Contraseña" value={password} onChangeText={setPassword}
           secureTextEntry placeholderTextColor="#9ca3af" />
 
+        {showCompanySlug && (
+          <TextInput
+            style={[styles.input, styles.slugInput]}
+            placeholder="Identificador de empresa (ej: mi-empresa)"
+            value={companySlug}
+            onChangeText={t => setCompanySlug(t.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholderTextColor="#9ca3af"
+          />
+        )}
+
         <TouchableOpacity style={[styles.button, { backgroundColor: accentColor }, loading && styles.buttonDisabled]}
           onPress={handleLogin} disabled={loading}>
           {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>Ingresar</Text>}
@@ -134,6 +178,10 @@ export default function LoginScreen({ onLoginSuccess, onForgotPassword }) {
         )}
 
         <View style={styles.divider} />
+
+        {customServerActive && (
+          <Text style={styles.customServerActive}>🌐 Servidor personalizado activo</Text>
+        )}
 
         <TouchableOpacity onPress={() => setShowServerConfig(!showServerConfig)} style={styles.serverLink}>
           <Text style={[styles.serverLinkText, { color: accentColor }]}>
@@ -184,6 +232,8 @@ const styles = StyleSheet.create({
   serverLinkText: { fontSize: 13, fontWeight: '600' },
   serverBox: { width: '100%', marginTop: 12, alignItems: 'center' },
   inputSmall: { width: '100%', borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 13, color: '#111827', marginBottom: 8 },
+  slugInput: { borderColor: '#93c5fd', backgroundColor: '#eff6ff' },
+  customServerActive: { fontSize: 11, color: '#92400e', backgroundColor: '#fef3c7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginBottom: 8, overflow: 'hidden' },
   saveButton: { borderRadius: 10, paddingVertical: 10, width: '100%', alignItems: 'center' },
   saveButtonText: { color: '#fff', fontSize: 13, fontWeight: '700' },
 })

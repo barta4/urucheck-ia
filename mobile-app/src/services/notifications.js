@@ -1,7 +1,7 @@
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 
 import { reportLocationToServer } from './locationService';
 
@@ -61,25 +61,42 @@ export async function registerForPushNotificationsAsync() {
 /**
  * Registra los listeners de notificaciones para responder a solicitudes de ubicación
  * emitidas desde el panel de administración.
+ *
+ * PRIVACY: la ubicación NUNCA se comparte sin una acción explícita del
+ * empleado (tap en el diálogo o en la notificación). Antes se reportaba
+ * automáticamente al recibir la push con la app en primer plano.
  */
 export function setupNotificationListeners(onLocationRequested) {
-  // 1. App en primer plano
+  // 1. App en primer plano: preguntar primero — el tap es el consentimiento
   const receivedSubscription = Notifications.addNotificationReceivedListener(async (notification) => {
     const data = notification?.request?.content?.data;
     if (data && data.type === 'LOCATION_REQUEST') {
-      console.log('[notifications] Solicitud de ubicación recibida en primer plano, reportando...');
-      const result = await reportLocationToServer('on_demand');
-      if (onLocationRequested) {
-        onLocationRequested(result);
-      }
+      console.log('[notifications] Solicitud de ubicación recibida en primer plano — pidiendo consentimiento');
+      Alert.alert(
+        '📍 Solicitud de ubicación',
+        'La administración de tu empresa solicita confirmar tu ubicación actual. ¿Compartirla ahora?',
+        [
+          { text: 'No ahora', style: 'cancel' },
+          {
+            text: 'Compartir ubicación',
+            onPress: async () => {
+              const result = await reportLocationToServer('on_demand');
+              if (onLocationRequested) {
+                onLocationRequested(result);
+              }
+            },
+          },
+        ]
+      );
     }
   });
 
-  // 2. Usuario interactúa/toca la notificación (en segundo plano o cerrada)
+  // 2. Usuario interactúa/toca la notificación (en segundo plano o cerrada):
+  //    el tap sobre la notificación es el consentimiento explícito
   const responseSubscription = Notifications.addNotificationResponseReceivedListener(async (response) => {
     const data = response?.notification?.request?.content?.data;
     if (data && data.type === 'LOCATION_REQUEST') {
-      console.log('[notifications] Solicitud de ubicación pulsada por el usuario, reportando...');
+      console.log('[notifications] Solicitud de ubicación aceptada por el usuario (tap)');
       const result = await reportLocationToServer('on_demand');
       if (onLocationRequested) {
         onLocationRequested(result);

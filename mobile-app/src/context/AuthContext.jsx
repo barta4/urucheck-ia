@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import api from '../api'
 import { registerForPushNotificationsAsync } from '../services/notifications'
 import { getUniqueDeviceId } from '../services/device'
+import { clearQueueForUser } from '../offlineQueue'
 
 const AuthContext = createContext(null)
 
@@ -51,14 +52,18 @@ export function AuthProvider({ children }) {
     restore()
   }, [])
 
-  const login = async (email, password) => {
+  const login = async (email, password, companySlug = null) => {
     const deviceId = await getUniqueDeviceId()
-    const res = await api.post('/auth/login', { email, password, device_id: deviceId })
+    const payload = { email, password, device_id: deviceId }
+    // Multi-tenant support: emails can exist in several companies; the
+    // backend answers 400 "multiple_companies" when the slug is needed.
+    if (companySlug) payload.company_slug = companySlug.trim().toLowerCase()
+    const res = await api.post('/auth/login', payload)
     await SecureStore.setItemAsync('token', res.data.access_token)
     await SecureStore.setItemAsync('user', JSON.stringify(res.data))
     setUser(res.data)
     setTokenExpired(false)
-    
+
     try {
       const pushToken = await registerForPushNotificationsAsync()
       if (pushToken) {
@@ -72,6 +77,15 @@ export function AuthProvider({ children }) {
 
   const logout = async () => {
     try {
+      // Best-effort server-side revocation (token may already be invalid)
+      try { await api.post('/auth/logout') } catch {}
+      // SECURITY: wipe this user's offline queue (+photos) BEFORE destroying
+      // the session — pending marks must never sync under the next account
+      // on a shared device.
+      const loggingOutUserId = user?.user_id
+      if (loggingOutUserId) {
+        await clearQueueForUser(loggingOutUserId)
+      }
       await SecureStore.deleteItemAsync('token')
       await SecureStore.deleteItemAsync('user')
       await AsyncStorage.removeItem('company_config_cache')

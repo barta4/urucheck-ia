@@ -8,6 +8,7 @@ import * as FileSystem from 'expo-file-system/legacy'
 import api from '../api'
 import { useCompany } from '../hooks/useCompany'
 import * as SecureStore from 'expo-secure-store'
+import { deleteQueuedPhoto } from '../offlineQueue'
 
 export default function LeavesScreen({ onBack }) {
   const company = useCompany()
@@ -103,6 +104,8 @@ export default function LeavesScreen({ onBack }) {
       }
       
       Alert.alert('Éxito', 'Solicitud enviada correctamente.')
+      // Clean up the local certificate photo — it was already uploaded
+      if (photoUri) await deleteQueuedPhoto(photoUri)
       setShowForm(false)
       setStartDate('')
       setEndDate('')

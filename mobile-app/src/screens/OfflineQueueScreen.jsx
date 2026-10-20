@@ -138,6 +138,10 @@ export default function OfflineQueueScreen({ navigation }) {
                 {new Date(item.queued_at).toLocaleString('es')}
               </Text>
 
+              {item.status === 'failed' && item.error && (
+                <Text style={styles.itemError}>⚠️ {item.error}</Text>
+              )}
+
               {item.latitude && item.longitude && (
                 <Text style={styles.itemLocation}>
                   📍 {item.latitude.toFixed(4)}, {item.longitude.toFixed(4)}
@@ -213,6 +217,7 @@ const styles = StyleSheet.create({
   statusPending: { color: '#d97706' },
   statusFailed: { color: '#dc2626' },
   itemTime: { fontSize: 14, fontWeight: '600', color: '#111827', marginBottom: 2 },
+  itemError: { fontSize: 12, color: '#b91c1c', marginBottom: 4, lineHeight: 16 },
   itemLocation: { fontSize: 12, color: '#6b7280' },
   itemPhoto: { fontSize: 12, color: '#6b7280', marginTop: 2 },
   itemActions: { flexDirection: 'row', gap: 8, marginTop: 10 },

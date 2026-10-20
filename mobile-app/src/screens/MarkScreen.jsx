@@ -315,6 +315,8 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
           gps_accuracy: location?.coords.accuracy,
           device_timestamp: new Date().toISOString(),
           photoUri,
+          // Owner of the mark: never synced under a different account
+          user_id: user?.user_id || null,
         })
 
         const count = await getQueueCount()
@@ -353,6 +355,7 @@ export default function MarkScreen({ onNavigateMyData, onNavigateLeaves, onNavig
           gps_accuracy: location?.coords?.accuracy,
           device_timestamp: new Date().toISOString(),
           photoUri,
+          user_id: user?.user_id || null,
         })
         const count = await getQueueCount()
         setQueueCount(count)
